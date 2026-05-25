@@ -1,0 +1,2741 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Super Plumber Adventure — 20 Levels</title>
+  <style>
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+  font-family: 'Courier New', monospace;
+}
+
+#game-container {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+#gameCanvas {
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  cursor: none;
+}
+
+#touch-controls {
+  display: none;
+  width: 100%;
+  padding: 10px;
+  justify-content: space-between;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+}
+
+#touch-left, #touch-right {
+  display: flex;
+  gap: 8px;
+}
+
+.touch-btn {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  border: 3px solid rgba(255,255,255,0.6);
+  background: rgba(255,255,255,0.2);
+  color: white;
+  font-size: 22px;
+  font-weight: bold;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.touch-btn:active {
+  background: rgba(255,255,255,0.5);
+}
+
+@media (max-width: 768px) {
+  #touch-controls {
+    display: flex;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  #touch-controls {
+    display: flex;
+  }
+}
+
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="gameCanvas"></canvas>
+    <div id="touch-controls">
+      <div id="touch-left">
+        <button class="touch-btn" id="btn-left">◀</button>
+        <button class="touch-btn" id="btn-right">▶</button>
+      </div>
+      <div id="touch-right">
+        <button class="touch-btn" id="btn-run">B</button>
+        <button class="touch-btn" id="btn-jump">A</button>
+      </div>
+    </div>
+  </div>
+  <script>
+// ===== src/constants.js =====
+// ============================================================
+// CONSTANTS
+// ============================================================
+const TS = 32; // Tile size in pixels
+
+const T = {
+  EMPTY:0, GROUND:1, BRICK:2, QUESTION:3, USED:4, SOLID:5,
+  PIPE_TL:6, PIPE_TR:7, PIPE_BL:8, PIPE_BR:9,
+  PLATFORM:10, DEATH:11, CASTLE:12, STAIR:13, CLOUD:14,
+  ICE:15, SAND:16, DARK:17, LAVA:18,
+  FLAG_TOP:19, FLAG_POLE:20,
+  HIDDEN_1UP:21, HIDDEN_COIN:22, NOTE:23, SPIKE:24,
+};
+
+const SOLID_TILES = new Set([
+  T.GROUND,T.BRICK,T.QUESTION,T.USED,T.SOLID,
+  T.PIPE_TL,T.PIPE_TR,T.PIPE_BL,T.PIPE_BR,
+  T.CASTLE,T.STAIR,T.NOTE,T.ICE,T.SAND,T.DARK,
+  T.HIDDEN_1UP,T.HIDDEN_COIN,
+]);
+const ONEWAY_TILES = new Set([T.PLATFORM, T.CLOUD]);
+const LETHAL_TILES = new Set([T.DEATH, T.LAVA, T.SPIKE]);
+
+// Physics
+const GRAVITY      = 0.52;
+const MAX_FALL     = 16;
+const WALK_SPEED   = 3.2;
+const RUN_SPEED    = 5.8;
+const ACCEL        = 0.38;
+const DECEL        = 0.28;
+const AIR_ACCEL    = 0.28;
+const JUMP_VEL     = -13.5;
+const ICE_DECEL    = 0.06;
+const COYOTE_TIME  = 8;
+const JUMP_BUFFER  = 10;
+
+// Player sizes
+const PW_S = 22, PH_S = 26;
+const PW_B = 24, PH_B = 46;
+
+
+// ===== src/audio_input.js =====
+// ============================================================
+// AUDIO ENGINE
+// ============================================================
+class AudioEngine {
+  constructor() {
+    try {
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      this.enabled = true;
+    } catch(e) { this.enabled = false; }
+  }
+  resume() {
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+  }
+  play(type) {
+    if (!this.enabled) return;
+    this.resume();
+    const ac = this.ctx, t = ac.currentTime;
+    const schedules = {
+      jump:         [[520,0.08,0,'square'],[580,0.07,0.06,'square']],
+      coin:         [[980,0.10,0,'sine'],[1320,0.08,0.08,'sine']],
+      stomp:        [[220,0.07,0,'square']],
+      powerup:      [[440,0.06,0,'square'],[495,0.06,0.08,'square'],[524,0.06,0.16,'square'],[660,0.08,0.24,'square']],
+      death:        [[660,0.08,0,'square'],[520,0.08,0.07,'square'],[440,0.08,0.14,'square'],[320,0.08,0.21,'square'],[260,0.1,0.28,'square']],
+      levelcomplete:[[392,0.1,0,'square'],[523,0.1,0.12,'square'],[659,0.1,0.24,'square'],[784,0.15,0.36,'square']],
+      flagpole:     [[880,0.07,0,'sine'],[784,0.07,0.06,'sine'],[698,0.07,0.12,'sine'],[523,0.07,0.18,'sine'],[440,0.07,0.24,'sine'],[392,0.1,0.30,'sine']],
+      break:        [[300,0.05,0,'sawtooth']],
+      '1up':        [[659,0.08,0,'square'],[523,0.08,0.08,'square'],[659,0.08,0.16,'square'],[784,0.08,0.24,'square'],[1046,0.1,0.32,'square']],
+      fireball:     [[200,0.06,0,'sawtooth']],
+      pause:        [[440,0.1,0,'square'],[880,0.08,0.1,'square']],
+    };
+    const seq = schedules[type];
+    if (!seq) return;
+    seq.forEach(([freq,dur,delay,wave]) => {
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.connect(g); g.connect(ac.destination);
+      o.type = wave; o.frequency.setValueAtTime(freq, t+delay);
+      g.gain.setValueAtTime(0.15, t+delay);
+      g.gain.exponentialRampToValueAtTime(0.001, t+delay+dur);
+      o.start(t+delay); o.stop(t+delay+dur+0.01);
+    });
+    if (type === 'stomp' || type === 'break') this._noise(0.08, 0, t);
+  }
+  _noise(dur, delay, t) {
+    const bufSize = Math.floor(this.ctx.sampleRate * dur);
+    const buf = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) d[i] = Math.random()*2-1;
+    const s = this.ctx.createBufferSource(), g = this.ctx.createGain();
+    s.buffer = buf; s.connect(g); g.connect(this.ctx.destination);
+    g.gain.setValueAtTime(0.07, t+delay);
+    g.gain.exponentialRampToValueAtTime(0.001, t+delay+dur);
+    s.start(t+delay); s.stop(t+delay+dur+0.01);
+  }
+}
+
+// ============================================================
+// INPUT MANAGER
+// ============================================================
+class InputManager {
+  constructor() {
+    this.keys = {}; this.prev = {};
+    this.touch = {left:false,right:false,jump:false,run:false};
+    document.addEventListener('keydown', e => {
+      this.keys[e.code] = true;
+      if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space'].includes(e.code)) e.preventDefault();
+    });
+    document.addEventListener('keyup', e => { this.keys[e.code] = false; });
+    this._setupTouch();
+  }
+  _setupTouch() {
+    const bind = (id, prop) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('touchstart', e => { e.preventDefault(); this.touch[prop]=true; }, {passive:false});
+      el.addEventListener('touchend',   e => { e.preventDefault(); this.touch[prop]=false;}, {passive:false});
+    };
+    bind('btn-left','left'); bind('btn-right','right');
+    bind('btn-jump','jump'); bind('btn-run','run');
+  }
+  isDown(code) {
+    if (code==='left')  return this.keys['ArrowLeft']  || this.keys['KeyA'] || this.touch.left;
+    if (code==='right') return this.keys['ArrowRight'] || this.keys['KeyD'] || this.touch.right;
+    if (code==='jump')  return this.keys['Space']||this.keys['ArrowUp']||this.keys['KeyX']||this.keys['KeyW']||this.touch.jump;
+    if (code==='run')   return this.keys['ShiftLeft']||this.keys['ShiftRight']||this.keys['KeyZ']||this.touch.run;
+    return !!this.keys[code];
+  }
+  justDown(code) {
+    const now = this.isDown(code);
+    const was = this.prev[code]||false;
+    return now && !was;
+  }
+  update() {
+    this.prev = {
+      left:this.isDown('left'), right:this.isDown('right'),
+      jump:this.isDown('jump'), run:this.isDown('run'),
+    };
+  }
+}
+
+
+// ===== src/sprites.js =====
+// ============================================================
+// SPRITE DRAWING — all character/item art via Canvas primitives
+// ============================================================
+
+function drawMario(ctx, x, y, big, animFrame, dir, state, invincible, crouching) {
+  ctx.save();
+  if (invincible && Math.floor(Date.now()/80)%2===0) ctx.globalAlpha = 0.35;
+  const w = big ? PW_B : PW_S;
+  if (dir < 0) { ctx.translate(x+w/2,0); ctx.scale(-1,1); ctx.translate(-(x+w/2),0); }
+  if (!big) _drawSmallMario(ctx, x, y, animFrame, state);
+  else      _drawBigMario  (ctx, x, y, animFrame, state, crouching);
+  ctx.restore();
+}
+
+function _drawSmallMario(ctx, x, y, f, state) {
+  const hatC = state==='fire'?'#FFFFFF':'#D80000';
+  const bodyC= state==='fire'?'#D80000':'#1A2ECC';
+  const shoe = '#8B3A00', skin='#FFCB8E';
+  ctx.fillStyle=hatC;  ctx.fillRect(x+3,y,16,5); ctx.fillRect(x+6,y-4,12,5);
+  ctx.fillStyle=skin;  ctx.fillRect(x+3,y+5,16,7);
+  ctx.fillStyle='#111'; ctx.fillRect(x+14,y+7,3,3);
+  ctx.fillStyle=shoe;  ctx.fillRect(x+2,y+11,18,2);
+  ctx.fillStyle=bodyC; ctx.fillRect(x,y+13,22,8);
+  const fo=f%2?2:0;
+  ctx.fillStyle=shoe; ctx.fillRect(x+fo,y+21,10,5); ctx.fillRect(x+12-fo,y+21,10,5);
+}
+
+function _drawBigMario(ctx, x, y, f, state, crouching) {
+  const hatC = state==='fire'?'#FFFFFF':'#D80000';
+  const bodyC= state==='fire'?'#D80000':'#1A2ECC';
+  const shoe='#8B3A00', skin='#FFCB8E';
+  if (crouching) {
+    const cy=y+(PH_B-30);
+    ctx.fillStyle=hatC;  ctx.fillRect(x+2,cy,20,8); ctx.fillRect(x+5,cy-5,14,7);
+    ctx.fillStyle=skin;  ctx.fillRect(x+2,cy+8,20,10);
+    ctx.fillStyle=bodyC; ctx.fillRect(x,cy+18,24,8);
+    ctx.fillStyle=shoe;  ctx.fillRect(x,cy+22,24,6);
+    return;
+  }
+  ctx.fillStyle=hatC;  ctx.fillRect(x+2,y,20,9); ctx.fillRect(x+5,y-7,14,8);
+  ctx.fillStyle=skin;  ctx.fillRect(x+2,y+9,20,10);
+  ctx.fillStyle='#111'; ctx.fillRect(x+16,y+11,4,4);
+  ctx.fillStyle=shoe;  ctx.fillRect(x+1,y+18,22,3);
+  ctx.fillStyle=bodyC; ctx.fillRect(x,y+21,24,14);
+  ctx.fillStyle='#D01010'; ctx.fillRect(x+4,y+21,5,14); ctx.fillRect(x+15,y+21,5,14);
+  const fo=f%2?2:-2;
+  ctx.fillStyle=bodyC; ctx.fillRect(x+fo,y+35,10,7); ctx.fillRect(x+14-fo,y+35,10,7);
+  ctx.fillStyle=shoe;  ctx.fillRect(x+fo-2,y+40,14,6); ctx.fillRect(x+12-fo,y+40,14,6);
+}
+
+function drawGoomba(ctx, x, y, f, squished) {
+  const w=30, bh=28, h=squished?8:bh, dy=y+(squished?bh-8:0);
+  ctx.fillStyle='#8B4513';
+  ctx.beginPath(); ctx.roundRect(x,dy,w,h,[squished?2:12]); ctx.fill();
+  if (!squished) {
+    const fo=f%2?2:-2;
+    ctx.fillStyle='#3C1800';
+    ctx.fillRect(x+fo,dy+h-5,11,7); ctx.fillRect(x+w-11-fo,dy+h-5,11,7);
+    ctx.fillStyle='#FFF'; ctx.fillRect(x+3,dy+6,10,9); ctx.fillRect(x+17,dy+6,10,9);
+    ctx.fillStyle='#111'; ctx.fillRect(x+5,dy+9,5,5);  ctx.fillRect(x+19,dy+9,5,5);
+    // angry brows
+    ctx.fillStyle='#3C1800';
+    ctx.save(); ctx.translate(x+3,dy+5); ctx.rotate(-0.35); ctx.fillRect(0,0,12,3); ctx.restore();
+    ctx.save(); ctx.translate(x+17,dy+5);ctx.rotate( 0.35); ctx.fillRect(0,0,12,3); ctx.restore();
+  }
+}
+
+function drawKoopa(ctx, x, y, f, inShell, dir, moving) {
+  if (inShell) {
+    ctx.fillStyle='#006820';
+    ctx.beginPath(); ctx.roundRect(x+2,y+4,26,22,[8]); ctx.fill();
+    ctx.fillStyle='#00B040';
+    ctx.beginPath(); ctx.roundRect(x+6,y+7,18,14,[5]); ctx.fill();
+    ctx.fillStyle='#006820';
+    ctx.fillRect(x+6,y+13,18,2); ctx.fillRect(x+14,y+7,2,14);
+    if (moving) {
+      ctx.globalAlpha=0.4; ctx.strokeStyle='#FFF'; ctx.lineWidth=1.5;
+      ctx.strokeRect(x+4,y+5,22,18); ctx.globalAlpha=1;
+    }
+    return;
+  }
+  if (dir<0) { ctx.save(); ctx.translate(x+15,0); ctx.scale(-1,1); ctx.translate(-(x+15),0); }
+  ctx.fillStyle='#006820'; ctx.beginPath(); ctx.roundRect(x+4,y+8,22,20,[5]); ctx.fill();
+  ctx.fillStyle='#00B040'; ctx.beginPath(); ctx.roundRect(x+6,y+9,15,14,[4]); ctx.fill();
+  ctx.fillStyle='#00B040'; ctx.fillRect(x+6,y+1,18,12);
+  ctx.fillStyle='#FFF'; ctx.fillRect(x+18,y+2,6,6);
+  ctx.fillStyle='#111'; ctx.fillRect(x+20,y+4,3,3);
+  const fo=f%2?2:0;
+  ctx.fillStyle='#FFCB8E'; ctx.fillRect(x+fo,y+24,10,7); ctx.fillRect(x+18-fo,y+24,10,7);
+  if (dir<0) ctx.restore();
+}
+
+function drawFlyingGoomba(ctx, x, y, f) {
+  const wingFlap = Math.sin(f*0.25)*10;
+  ctx.fillStyle='#C8C8C8';
+  ctx.beginPath(); ctx.moveTo(x+2,y+10); ctx.lineTo(x-14,y+wingFlap); ctx.lineTo(x-8,y+18); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(x+28,y+10); ctx.lineTo(x+44,y+wingFlap); ctx.lineTo(x+38,y+18); ctx.closePath(); ctx.fill();
+  drawGoomba(ctx, x, y, f, false);
+}
+
+function drawPiranhaPlant(ctx, x, y, f, visible) {
+  if (!visible) return;
+  ctx.fillStyle='#006820'; ctx.fillRect(x+9,y,14,32);
+  ctx.fillStyle='#D80000'; ctx.beginPath(); ctx.arc(x+16,y+4,15,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#FFF';
+  ctx.beginPath(); ctx.arc(x+9,y+1,4,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+22,y+7,4,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#FFF';
+  for (let i=0;i<4;i++) ctx.fillRect(x+2+i*7,y+11,5,5);
+}
+
+function drawBulletBill(ctx, x, y) {
+  ctx.fillStyle='#1A1A1A'; ctx.beginPath(); ctx.roundRect(x,y+5,30,18,[4]); ctx.fill();
+  ctx.fillStyle='#333';
+  ctx.beginPath(); ctx.moveTo(x+30,y+5); ctx.lineTo(x+40,y+14); ctx.lineTo(x+30,y+23); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#FFF'; ctx.fillRect(x+6,y+8,8,7);
+  ctx.fillStyle='#000'; ctx.fillRect(x+8,y+10,4,4);
+}
+
+function drawCoin(ctx, x, y, f, large) {
+  const r=large?10:7, cx=x+(large?10:8), cy=y+(large?10:8);
+  const wobble=Math.abs(Math.sin(f*0.15))*(large?9:5)+1;
+  ctx.fillStyle='#FFD700'; ctx.beginPath(); ctx.ellipse(cx,cy,wobble,r,0,0,Math.PI*2); ctx.fill();
+  if (wobble>3) { ctx.fillStyle='#FFF8A0'; ctx.beginPath(); ctx.ellipse(cx-1,cy-2,wobble-3,r-3,0,0,Math.PI*2); ctx.fill(); }
+}
+
+function drawMushroom(ctx, x, y, type) {
+  ctx.fillStyle='#FFF'; ctx.fillRect(x+6,y+14,16,14);
+  ctx.fillStyle=type==='1up'?'#00C040':'#D80000';
+  ctx.beginPath(); ctx.arc(x+14,y+14,14,Math.PI,0); ctx.fill();
+  ctx.fillStyle='#FFF';
+  [[8,10],[21,10],[14,5]].forEach(([dx,dy])=>{ ctx.beginPath(); ctx.arc(x+dx,y+dy,4,0,Math.PI*2); ctx.fill(); });
+  ctx.fillStyle='#111'; ctx.fillRect(x+6,y+16,4,4); ctx.fillRect(x+18,y+16,4,4);
+}
+
+function drawFireFlower(ctx, x, y, f) {
+  ctx.fillStyle='#006820'; ctx.fillRect(x+11,y+14,6,16);
+  ctx.fillStyle='#00A040';
+  ctx.beginPath(); ctx.ellipse(x+7,y+22,7,4,-0.5,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x+21,y+22,7,4,0.5,0,Math.PI*2); ctx.fill();
+  ['#FF6B00','#FFAA00','#FF0000','#FF6B00'].forEach((col,i)=>{
+    const a=(Math.PI/2)*i+f*0.05;
+    ctx.fillStyle=col; ctx.beginPath();
+    ctx.ellipse(x+14+Math.cos(a)*8,y+8+Math.sin(a)*8,5,5,0,0,Math.PI*2); ctx.fill();
+  });
+  ctx.fillStyle='#FFFF00'; ctx.beginPath(); ctx.arc(x+14,y+8,5,0,Math.PI*2); ctx.fill();
+}
+
+function drawStar(ctx, x, y, f) {
+  const cx=x+12, cy=y+12, r1=12, r2=6, rot=f*0.06;
+  ctx.fillStyle=['#FFD700','#FFAA00','#FF8800','#FFD700'][Math.floor(f/4)%4];
+  ctx.beginPath();
+  for (let i=0;i<10;i++) {
+    const r=i%2===0?r1:r2, a=(i*Math.PI/5)+rot;
+    i===0?ctx.moveTo(cx+r*Math.cos(a),cy+r*Math.sin(a)):ctx.lineTo(cx+r*Math.cos(a),cy+r*Math.sin(a));
+  }
+  ctx.closePath(); ctx.fill();
+}
+
+function drawFireball(ctx, x, y, f) {
+  ctx.fillStyle=['#FF8800','#FFDD00','#FF4400'][f%3];
+  ctx.beginPath(); ctx.arc(x+6,y+6,6,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#FFF'; ctx.beginPath(); ctx.arc(x+4,y+4,2.5,0,Math.PI*2); ctx.fill();
+}
+
+
+// ===== src/tiles_camera.js =====
+// ============================================================
+// TILE & BACKGROUND RENDERING
+// ============================================================
+
+function drawTile(ctx, type, px, py, f) {
+  const s = TS;
+  switch(type) {
+    case T.GROUND: case T.SAND: case T.ICE: case T.DARK: {
+      const [top,body] = type===T.SAND?['#E8B840','#C8903C']:
+                         type===T.ICE ?['#C0E8FF','#88C8F0']:
+                         type===T.DARK?['#505060','#38384A']:
+                                       ['#4AA020','#C87830'];
+      ctx.fillStyle=body; ctx.fillRect(px,py,s,s);
+      ctx.fillStyle=top;  ctx.fillRect(px,py,s,6);
+      ctx.fillStyle='rgba(0,0,0,0.1)'; ctx.fillRect(px,py+11,s,2); ctx.fillRect(px,py+21,s,2);
+      break;
+    }
+    case T.BRICK: {
+      ctx.fillStyle='#C84C0C'; ctx.fillRect(px,py,s,s);
+      ctx.fillStyle='#E06028'; ctx.fillRect(px+1,py+1,s-2,s-2);
+      ctx.fillStyle='#C84C0C';
+      ctx.fillRect(px,py+10,s,3); ctx.fillRect(px,py+22,s,3);
+      ctx.fillRect(px,py,2,10); ctx.fillRect(px+18,py,2,10);
+      ctx.fillRect(px+9,py+10,2,12); ctx.fillRect(px,py+22,2,s-22); ctx.fillRect(px+18,py+22,2,s-22);
+      ctx.fillStyle='rgba(255,255,255,0.15)'; ctx.fillRect(px+2,py+2,s-4,4);
+      break;
+    }
+    case T.QUESTION: {
+      const b=Math.sin(f*0.12)*2;
+      ctx.fillStyle='#F0A000'; ctx.fillRect(px,py+b,s,s);
+      ctx.fillStyle='#FFD040'; ctx.fillRect(px+2,py+2+b,s-4,s-4);
+      ctx.fillStyle='#FFF'; ctx.font='bold 20px monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('?',px+s/2,py+s/2+b);
+      ctx.strokeStyle='#FFE870'; ctx.lineWidth=1.5; ctx.strokeRect(px+3,py+3+b,s-6,s-6);
+      break;
+    }
+    case T.USED: {
+      ctx.fillStyle='#8B6520'; ctx.fillRect(px,py,s,s);
+      ctx.fillStyle='#A07830'; ctx.fillRect(px+2,py+2,s-4,s-4);
+      ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fillRect(px+2,py+2,s-4,4);
+      break;
+    }
+    case T.SOLID: case T.CASTLE: {
+      ctx.fillStyle=type===T.CASTLE?'#888':'#8090A0'; ctx.fillRect(px,py,s,s);
+      ctx.fillStyle=type===T.CASTLE?'#696':'#607080'; // oops dark
+      ctx.fillStyle=type===T.CASTLE?'#666':'#607080'; ctx.fillRect(px+1,py+1,s-2,s-2);
+      ctx.fillStyle='rgba(255,255,255,0.08)'; ctx.fillRect(px+2,py+2,s-4,5);
+      break;
+    }
+    case T.STAIR: {
+      ctx.fillStyle='#C8A060'; ctx.fillRect(px,py,s,s);
+      ctx.fillStyle='#E0B870'; ctx.fillRect(px+1,py+1,s-2,s-2);
+      ctx.fillStyle='rgba(0,0,0,0.15)'; ctx.fillRect(px,py+s-2,s,2);
+      break;
+    }
+    case T.PIPE_TL: {
+      ctx.fillStyle='#007820'; ctx.fillRect(px,py,s,s);
+      ctx.fillStyle='#00A030'; ctx.fillRect(px+2,py+2,s-4,s-2);
+      ctx.fillStyle='#005010'; ctx.fillRect(px,py+s-4,s,4);
+      ctx.fillStyle='#40C060'; ctx.fillRect(px+4,py+2,6,s-6);
+      break;
+    }
+    case T.PIPE_TR: {
+      ctx.fillStyle='#007820'; ctx.fillRect(px,py,s,s);
+      ctx.fillStyle='#00A030'; ctx.fillRect(px+2,py+2,s-4,s-2);
+      ctx.fillStyle='#005010'; ctx.fillRect(px,py+s-4,s,4);
+      break;
+    }
+    case T.PIPE_BL: {
+      ctx.fillStyle='#007820'; ctx.fillRect(px,py,s,s);
+      ctx.fillStyle='#00A030'; ctx.fillRect(px+2,py,s-4,s);
+      ctx.fillStyle='#40C060'; ctx.fillRect(px+4,py,6,s);
+      break;
+    }
+    case T.PIPE_BR: {
+      ctx.fillStyle='#007820'; ctx.fillRect(px,py,s,s);
+      ctx.fillStyle='#00A030'; ctx.fillRect(px+2,py,s-4,s);
+      break;
+    }
+    case T.PLATFORM: {
+      ctx.fillStyle='#8B6520'; ctx.fillRect(px,py,s,10);
+      ctx.fillStyle='#A07830'; ctx.fillRect(px+2,py+2,s-4,6);
+      break;
+    }
+    case T.CLOUD: {
+      ctx.fillStyle='rgba(255,255,255,0.85)'; ctx.fillRect(px,py,s,10);
+      ctx.fillStyle='rgba(200,200,200,0.5)';  ctx.fillRect(px,py+7,s,5);
+      break;
+    }
+    case T.LAVA: {
+      const la=Math.sin(f*0.08+px*0.1)*4;
+      ctx.fillStyle='#FF4000'; ctx.fillRect(px,py,s,s);
+      ctx.fillStyle='#FF8800'; ctx.fillRect(px,py+4+la,s,s-4);
+      if ((f+Math.floor(px/TS))%28<5) {
+        ctx.fillStyle='#FFC000'; ctx.beginPath(); ctx.arc(px+s/2,py+5+la,4,0,Math.PI*2); ctx.fill();
+      }
+      break;
+    }
+    case T.SPIKE: {
+      ctx.fillStyle='#707080';
+      for (let i=0;i<2;i++) {
+        ctx.beginPath(); ctx.moveTo(px+i*16+2,py+s); ctx.lineTo(px+i*16+10,py+6); ctx.lineTo(px+i*16+18,py+s); ctx.closePath(); ctx.fill();
+      }
+      break;
+    }
+    case T.NOTE: {
+      const nb=Math.abs(Math.sin(f*0.18))*3;
+      ctx.fillStyle='#FF8C00'; ctx.fillRect(px,py+nb,s,s-nb);
+      ctx.fillStyle='#FFAA30'; ctx.fillRect(px+2,py+2+nb,s-4,s-4-nb);
+      ctx.fillStyle='#FFF'; ctx.font='bold 16px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('♪',px+s/2,py+s/2+nb);
+      break;
+    }
+    case T.FLAG_TOP: {
+      ctx.fillStyle='#AAA'; ctx.fillRect(px+14,py,4,s);
+      ctx.fillStyle='#00C820';
+      ctx.beginPath(); ctx.moveTo(px+18,py+2); ctx.lineTo(px+38,py+14); ctx.lineTo(px+18,py+26); ctx.closePath(); ctx.fill();
+      break;
+    }
+    case T.FLAG_POLE: {
+      ctx.fillStyle='#AAA'; ctx.fillRect(px+14,py,4,s);
+      break;
+    }
+  }
+}
+
+function drawBackground(ctx, camX, camY, levelPixW, theme, f) {
+  const W=ctx.canvas.width, H=ctx.canvas.height;
+  const themeData = {
+    plains:     {sky:'#5C94FC', top:'#3060CC', bot:'#8BBCFF'},
+    underground:{sky:'#000'},
+    desert:     {sky:'#F5C060', top:'#E8A030', bot:'#F5C060'},
+    ice:        {sky:'#A0D8F8', top:'#70B8F0', bot:'#D0F0FF'},
+    dark:       {sky:'#080420', top:'#0C0630', bot:'#180840'},
+    castle:     {sky:'#302060', top:'#200840', bot:'#504080'},
+  };
+  const td = themeData[theme] || themeData.plains;
+  if (td.top) {
+    const g=ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,td.top); g.addColorStop(1,td.bot);
+    ctx.fillStyle=g;
+  } else { ctx.fillStyle=td.sky; }
+  ctx.fillRect(0,0,W,H);
+
+  if (theme==='underground'||theme==='dark'||theme==='castle') {
+    ctx.fillStyle='rgba(255,255,255,0.7)';
+    for (let i=0;i<60;i++) {
+      const sx=((i*97.3+23)%(W*3))/3-(camX*(theme==='underground'?0.05:0.02));
+      const sy=(i*47.7+11)%(H*0.65);
+      ctx.fillRect(((sx%W)+W)%W, sy, i%4===0?2:1, i%4===0?2:1);
+    }
+    return;
+  }
+  // Clouds
+  const clouds=[
+    {x:200,y:0.10,s:0.9},{x:550,y:0.08,s:0.7},{x:900,y:0.12,s:1.1},
+    {x:1300,y:0.07,s:0.8},{x:1700,y:0.13,s:1.0},{x:2100,y:0.09,s:0.75},
+    {x:2500,y:0.11,s:1.2},{x:2900,y:0.06,s:0.65},{x:3300,y:0.14,s:0.9},
+  ];
+  clouds.forEach(cl=>{
+    const cx=((cl.x-camX*0.3)%(levelPixW+W)+levelPixW+W)%(levelPixW+W)-100;
+    if (cx>-200&&cx<W+100) _drawCloud(ctx,cx,H*cl.y,cl.s,theme);
+  });
+  // Hills
+  if (theme==='plains'||theme==='desert'||theme==='ice') {
+    const hcol=theme==='desert'?'#D49020':theme==='ice'?'#A8D8F0':'#3A8818';
+    for (let i=0;i<8;i++) {
+      const hx=((i*320-camX*0.5)%(levelPixW+400)+levelPixW+400)%(levelPixW+400)-80;
+      const hh=50+i*8;
+      ctx.fillStyle=hcol; ctx.beginPath();
+      ctx.arc(hx+70,H-TS*3-hh+hh,70,Math.PI,0); ctx.fill();
+      if (theme==='ice') {
+        ctx.fillStyle='#EEEEFF'; ctx.beginPath();
+        ctx.arc(hx+70,H-TS*3-hh+hh,70,Math.PI,Math.PI*1.4); ctx.arc(hx+70,H-TS*3-hh+hh,70,Math.PI*1.6,0); ctx.closePath(); ctx.fill();
+      }
+    }
+  }
+}
+
+function _drawCloud(ctx, x, y, s, theme) {
+  ctx.fillStyle=theme==='desert'?'rgba(255,255,220,0.85)':'rgba(255,255,255,0.92)';
+  ctx.beginPath();
+  ctx.arc(x+28*s,y+18*s,18*s,0,Math.PI*2);
+  ctx.arc(x+50*s,y+12*s,22*s,0,Math.PI*2);
+  ctx.arc(x+74*s,y+18*s,17*s,0,Math.PI*2);
+  ctx.fill(); ctx.fillRect(x+10*s,y+18*s,72*s,12*s);
+  ctx.fillStyle='rgba(200,200,200,0.4)'; ctx.fillRect(x+10*s,y+27*s,72*s,4*s);
+}
+
+// ============================================================
+// CAMERA
+// ============================================================
+class Camera {
+  constructor() { this.x=0; this.y=0; this.shake=0; }
+  update(tx,ty,lvlW,lvlH,vW,vH) {
+    const cx=tx-vW*0.38, cy=ty-vH*0.55;
+    const nx=Math.max(0,Math.min(cx,lvlW-vW));
+    const ny=Math.max(0,Math.min(cy,lvlH-vH));
+    this.x+=(nx-this.x)*0.12; this.y+=(ny-this.y)*0.10;
+    this.shake*=0.82;
+  }
+  get rx(){ return this.x+(Math.random()-0.5)*this.shake; }
+  get ry(){ return this.y+(Math.random()-0.5)*this.shake; }
+  addShake(v){ this.shake=Math.min(12,this.shake+v); }
+}
+
+// ============================================================
+// PARTICLE SYSTEM
+// ============================================================
+class ParticleSystem {
+  constructor(){ this.list=[]; }
+  add(x,y,type,n=8){
+    const palettes={
+      coin:   ['#FFD700','#FFEE88','#FFC000'],
+      brick:  ['#C84C0C','#E06028','#A03000'],
+      death:  ['#D80000','#FF6060','#FFB880'],
+      star:   ['#FFD700','#FFFFFF','#FFB800'],
+      stomp:  ['#8B4513','#6B3010'],
+      powerup:['#FF8C00','#FFFF00','#FF4400'],
+      snow:   ['#FFFFFF','#E0F0FF'],
+    };
+    const pal = palettes[type]||['#FFF'];
+    for (let i=0;i<n;i++){
+      const a=(Math.PI*2/n)*i+Math.random()*0.6;
+      const sp=1.5+Math.random()*4;
+      this.list.push({
+        x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-2,
+        color:pal[i%pal.length],life:1,decay:0.028+Math.random()*0.03,
+        size:3+Math.random()*4,gravity:type==='snow'?0.05:0.15,
+      });
+    }
+  }
+  addText(x,y,text,color='#FFD700'){
+    this.list.push({x,y,vx:0,vy:-2.5,text,color,life:1,decay:0.022,size:16,gravity:0,isText:true});
+  }
+  update(){ for(let i=this.list.length-1;i>=0;i--){ const p=this.list[i]; p.x+=p.vx;p.y+=p.vy;p.vy+=p.gravity;p.vx*=0.93;p.life-=p.decay; if(p.life<=0)this.list.splice(i,1); } }
+  draw(ctx,cx,cy){
+    this.list.forEach(p=>{
+      ctx.globalAlpha=Math.max(0,p.life);
+      if(p.isText){ ctx.fillStyle=p.color; ctx.font=`bold ${p.size}px monospace`; ctx.textAlign='center'; ctx.fillText(p.text,p.x-cx,p.y-cy); }
+      else{ ctx.fillStyle=p.color; ctx.fillRect(p.x-cx-p.size/2,p.y-cy-p.size/2,p.size,p.size); }
+    });
+    ctx.globalAlpha=1;
+  }
+}
+
+
+// ===== src/tilemap.js =====
+// ============================================================
+// TILEMAP — stores tiles, builds from blueprint, handles collision
+// ============================================================
+class TileMap {
+  constructor(width, height) {
+    this.width = width;
+    this.height = height;
+    this.data = new Uint8Array(width * height);
+    this.meta = {}; // extra per-tile data (question contents, etc.)
+  }
+
+  set(x, y, type, metaVal) {
+    if (x<0||x>=this.width||y<0||y>=this.height) return;
+    this.data[y*this.width+x] = type;
+    if (metaVal !== undefined) this.meta[y*this.width+x] = metaVal;
+  }
+  get(x,y) {
+    if (x<0||x>=this.width||y<0||y>=this.height) return T.SOLID;
+    return this.data[y*this.width+x];
+  }
+  getMeta(x,y) { return this.meta[y*this.width+x]; }
+  setMeta(x,y,v) { this.meta[y*this.width+x]=v; }
+
+  // Check if pixel rect collides with solid tiles
+  // Returns list of {tx,ty,tile,side} for each hit
+  collide(left,top,w,h) {
+    const hits=[];
+    const x1=Math.floor(left/TS), x2=Math.floor((left+w-1)/TS);
+    const y1=Math.floor(top/TS),  y2=Math.floor((top+h-1)/TS);
+    for (let ty=y1;ty<=y2;ty++) for (let tx=x1;tx<=x2;tx++) {
+      const tile=this.get(tx,ty);
+      if (SOLID_TILES.has(tile)||LETHAL_TILES.has(tile)) hits.push({tx,ty,tile});
+    }
+    return hits;
+  }
+
+  // One-way platform top-only check (returns tile row y in px)
+  platformAt(left,top,w,h) {
+    const x1=Math.floor(left/TS), x2=Math.floor((left+w-1)/TS);
+    const ty=Math.floor((top+h)/TS);
+    for (let tx=x1;tx<=x2;tx++) {
+      const tile=this.get(tx,ty);
+      if (ONEWAY_TILES.has(tile)) return ty*TS;
+    }
+    return null;
+  }
+
+  isLethalAt(px,py,w,h) {
+    const x1=Math.floor(px/TS),x2=Math.floor((px+w-1)/TS);
+    const y1=Math.floor(py/TS),y2=Math.floor((py+h-1)/TS);
+    for (let ty=y1;ty<=y2;ty++) for (let tx=x1;tx<=x2;tx++) {
+      if (LETHAL_TILES.has(this.get(tx,ty))) return true;
+    }
+    return false;
+  }
+}
+
+// ============================================================
+// LEVEL BUILDER — converts compact blueprint into TileMap
+// ============================================================
+function buildLevel(def) {
+  const map = new TileMap(def.width, def.height);
+  const bp = def.blueprint || [];
+
+  for (const cmd of bp) {
+    switch(cmd[0]) {
+      case 'row': { // ['row', y, x1, x2, tile]
+        const [,y,x1,x2,tile] = cmd;
+        for (let x=x1;x<=x2;x++) map.set(x,y,tile);
+        break;
+      }
+      case 'col': { // ['col', x, y1, y2, tile]
+        const [,x,y1,y2,tile] = cmd;
+        for (let y=y1;y<=y2;y++) map.set(x,y,tile);
+        break;
+      }
+      case 'fill': { // ['fill', x1, y1, x2, y2, tile]
+        const [,x1,y1,x2,y2,tile] = cmd;
+        for (let y=y1;y<=y2;y++) for (let x=x1;x<=x2;x++) map.set(x,y,tile);
+        break;
+      }
+      case 'tile': { // ['tile', x, y, tile, ?meta]
+        const [,x,y,tile,meta] = cmd;
+        map.set(x,y,tile,meta);
+        break;
+      }
+      case 'pipe': { // ['pipe', x, bottomRow, h]
+        const [,x,bRow,h] = cmd;
+        const topRow = bRow - h + 1;
+        for (let y=topRow+1;y<=bRow;y++) { map.set(x,y,T.PIPE_BL); map.set(x+1,y,T.PIPE_BR); }
+        map.set(x,topRow,T.PIPE_TL); map.set(x+1,topRow,T.PIPE_TR);
+        break;
+      }
+      case 'stair_r': { // ['stair_r', x, baseY, steps, tile]
+        const [,x,baseY,steps,tile=T.STAIR] = cmd;
+        for (let i=0;i<steps;i++)
+          for (let y=baseY-i;y<=baseY;y++) map.set(x+i,y,tile);
+        break;
+      }
+      case 'stair_l': { // ['stair_l', x, baseY, steps, tile]
+        const [,x,baseY,steps,tile=T.STAIR] = cmd;
+        for (let i=0;i<steps;i++)
+          for (let y=baseY-i;y<=baseY;y++) map.set(x-i,y,tile);
+        break;
+      }
+      case 'flagpole': { // ['flagpole', x, topRow, bottomRow]
+        const [,x,topRow,bottomRow] = cmd;
+        map.set(x,topRow,T.FLAG_TOP);
+        for (let y=topRow+1;y<=bottomRow;y++) map.set(x,y,T.FLAG_POLE);
+        break;
+      }
+    }
+  }
+  return map;
+}
+
+
+// ===== src/player.js =====
+// ============================================================
+// PLAYER
+// ============================================================
+class Player {
+  constructor(x, y) {
+    this.reset(x, y);
+  }
+
+  reset(x, y) {
+    this.x = x; this.y = y;
+    this.vx = 0; this.vy = 0;
+    this.big = false;
+    this.state = 'small'; // small | big | fire
+    this.dir = 1; // facing direction
+    this.onGround = false;
+    this.onIce = false;
+    this.coyote = 0;
+    this.jumpBuffer = 0;
+    this.jumpHeld = 0; // frames jump held
+    this.animFrame = 0;
+    this.animTimer = 0;
+    this.invincible = 0; // frames
+    this.dead = false;
+    this.deadTimer = 0;
+    this.crouching = false;
+    this.climbing = false;
+    this.flagSlide = false;
+    this.flagX = 0; this.flagY = 0; this.flagVY = 0;
+    this.score = 0;
+    this.coins = 0;
+    this.lives = 3;
+    this.fireballs = [];
+    this.fireballCooldown = 0;
+    this.running = false;
+    this.skidding = false;
+  }
+
+  get w() { return this.big ? PW_B : PW_S; }
+  get h() { return this.big ? (this.crouching ? 30 : PH_B) : PH_S; }
+  get cx() { return this.x + this.w / 2; }
+  get cy() { return this.y + this.h / 2; }
+
+  collect(type, value) {
+    if (type === 'coin') {
+      this.score += 200; this.coins++;
+      if (this.coins >= 100) { this.coins -= 100; this.lives++; }
+    } else if (type === 'points') {
+      this.score += value;
+    } else if (type === '1up') {
+      this.lives++;
+    }
+  }
+
+  grow(type) {
+    if (type === 'mushroom' && this.state === 'small') {
+      this.state = 'big'; this.big = true;
+    } else if (type === 'flower') {
+      if (this.state !== 'fire') {
+        this.state = 'fire'; this.big = true;
+      }
+    } else if (type === 'star') {
+      this.invincible = 600;
+    }
+  }
+
+  hurt(cam) {
+    if (this.invincible > 0 || this.dead) return;
+    if (this.state === 'big' || this.state === 'fire') {
+      this.state = 'small'; this.big = false;
+      this.invincible = 180;
+      if (cam) cam.addShake(8);
+    } else {
+      this.die(cam);
+    }
+  }
+
+  die(cam) {
+    if (this.dead) return;
+    this.dead = true;
+    this.deadTimer = 0;
+    this.vy = -14;
+    this.vx = 0;
+    if (cam) cam.addShake(14);
+  }
+
+  update(input, map, entities, sfx, dt) {
+    if (this.flagSlide) { this._updateFlagSlide(sfx); return; }
+    if (this.dead) { this._updateDead(); return; }
+
+    const prevOnGround = this.onGround;
+    this.running = input.isDown('run');
+    const maxSpd = this.running ? RUN_SPEED : WALK_SPEED;
+
+    // Crouch
+    this.crouching = this.big && this.onGround && input.isDown('jump') && input.isDown('left') === false && input.isDown('right') === false;
+    // Actually: crouch is down arrow
+    this.crouching = this.big && this.onGround && (input.isDown('ArrowDown') || input.isDown('KeyS'));
+
+    // Horizontal movement
+    if (!this.crouching) {
+      const decel = this.onIce ? ICE_DECEL : (this.onGround ? DECEL : AIR_ACCEL*0.6);
+      const accel = this.onGround ? ACCEL : AIR_ACCEL;
+      if (input.isDown('left')) {
+        this.vx -= accel;
+        this.dir = -1;
+        if (this.vx > 0) this.skidding = true; else this.skidding = false;
+      } else if (input.isDown('right')) {
+        this.vx += accel;
+        this.dir = 1;
+        if (this.vx < 0) this.skidding = true; else this.skidding = false;
+      } else {
+        this.skidding = false;
+        if (Math.abs(this.vx) < decel) this.vx = 0;
+        else this.vx -= Math.sign(this.vx) * decel;
+      }
+      this.vx = Math.max(-maxSpd, Math.min(maxSpd, this.vx));
+    } else {
+      this.vx *= 0.85;
+    }
+
+    // Jump buffer
+    if (input.justDown('jump')) this.jumpBuffer = JUMP_BUFFER;
+    else if (this.jumpBuffer > 0) this.jumpBuffer--;
+
+    // Coyote time
+    if (this.onGround) this.coyote = COYOTE_TIME;
+    else if (this.coyote > 0) this.coyote--;
+
+    // Jump
+    if (this.jumpBuffer > 0 && this.coyote > 0 && !this.crouching) {
+      this.vy = JUMP_VEL;
+      this.jumpHeld = 1;
+      this.coyote = 0;
+      this.jumpBuffer = 0;
+      sfx.play('jump');
+    }
+    // Variable jump height
+    if (this.jumpHeld > 0) {
+      if (input.isDown('jump') && this.vy < 0) {
+        this.jumpHeld++;
+        if (this.jumpHeld > 18) { this.jumpHeld = 0; }
+      } else {
+        if (this.vy < -5) this.vy *= 0.55; // cut jump short
+        this.jumpHeld = 0;
+      }
+    }
+
+    // Gravity
+    this.vy = Math.min(this.vy + GRAVITY, MAX_FALL);
+
+    // Move & collide
+    this._moveX(map, sfx, entities);
+    this._moveY(map, sfx, entities);
+
+    // Fireballs
+    if (this.fireballCooldown > 0) this.fireballCooldown--;
+    if (this.state === 'fire' && input.justDown('run') && this.fireballCooldown === 0 && this.fireballs.length < 2) {
+      this.fireballs.push(new Fireball(this.cx, this.y + this.h * 0.4, this.dir));
+      this.fireballCooldown = 20;
+      sfx.play('fireball');
+    }
+    this.fireballs = this.fireballs.filter(fb => fb.alive);
+    this.fireballs.forEach(fb => fb.update(map));
+
+    if (this.invincible > 0) this.invincible--;
+
+    // Animation
+    if (!this.onGround) {
+      this.animFrame = 2; // jump frame
+    } else if (Math.abs(this.vx) > 0.2) {
+      this.animTimer++;
+      const rate = this.running ? 4 : 7;
+      if (this.animTimer >= rate) { this.animTimer=0; this.animFrame=(this.animFrame+1)%4; }
+    } else {
+      this.animFrame = 0; this.animTimer = 0;
+    }
+
+    // Landing squash (visual feedback) — handled in draw
+    if (!prevOnGround && this.onGround) {
+      // could add land effect
+    }
+  }
+
+  _moveX(map, sfx, entities) {
+    this.x += this.vx;
+    const left=this.x, right=this.x+this.w-1, top=this.y+2, bottom=this.y+this.h-1;
+    // Left wall
+    const tx1=Math.floor(left/TS), ty1=Math.floor(top/TS), ty2=Math.floor(bottom/TS);
+    for (let ty=ty1;ty<=ty2;ty++) {
+      const tile=map.get(tx1,ty);
+      if (SOLID_TILES.has(tile)) {
+        this.x = (tx1+1)*TS;
+        this.vx = Math.max(0,this.vx);
+        this._hitBlockFromSide(tx1,ty,map,sfx);
+        break;
+      }
+    }
+    // Right wall
+    const tx2=Math.floor((this.x+this.w-1)/TS);
+    for (let ty=ty1;ty<=ty2;ty++) {
+      const tile=map.get(tx2,ty);
+      if (SOLID_TILES.has(tile)) {
+        this.x = tx2*TS - this.w;
+        this.vx = Math.min(0,this.vx);
+        break;
+      }
+    }
+    // World bounds
+    if (this.x < 0) { this.x=0; this.vx=0; }
+  }
+
+  _moveY(map, sfx, entities) {
+    this.y += this.vy;
+    this.onGround = false; this.onIce = false;
+
+    // Falling — check below
+    if (this.vy >= 0) {
+      const bottom = this.y + this.h;
+      const ty = Math.floor((bottom-1)/TS);
+      const x1=Math.floor((this.x+2)/TS), x2=Math.floor((this.x+this.w-3)/TS);
+      for (let tx=x1;tx<=x2;tx++) {
+        const tile=map.get(tx,ty);
+        if (SOLID_TILES.has(tile)) {
+          this.y = ty*TS - this.h;
+          this.vy = 0; this.onGround = true;
+          if (tile===T.ICE) this.onIce = true;
+          break;
+        }
+        // one-way platforms
+        if (ONEWAY_TILES.has(tile) && Math.floor((this.y+this.h-this.vy-1)/TS) < ty) {
+          this.y = ty*TS - this.h;
+          this.vy = 0; this.onGround = true;
+          break;
+        }
+      }
+    }
+    // Rising — check above (head)
+    if (this.vy < 0) {
+      const ty=Math.floor(this.y/TS);
+      const x1=Math.floor((this.x+2)/TS), x2=Math.floor((this.x+this.w-3)/TS);
+      for (let tx=x1;tx<=x2;tx++) {
+        const tile=map.get(tx,ty);
+        if (SOLID_TILES.has(tile)) {
+          this.y = (ty+1)*TS;
+          this.vy = Math.max(0, this.vy);
+          this._hitBlockFromBelow(tx, ty, map, sfx, entities);
+          break;
+        }
+      }
+    }
+  }
+
+  _hitBlockFromBelow(tx, ty, map, sfx, entities) {
+    const tile = map.get(tx,ty);
+    if (tile === T.QUESTION || tile === T.HIDDEN_COIN || tile === T.HIDDEN_1UP) {
+      const meta = map.getMeta(tx,ty);
+      map.set(tx,ty,T.USED);
+      if (tile === T.QUESTION || tile === T.HIDDEN_COIN) {
+        if (meta === 'mushroom' || meta === 'flower') {
+          if (entities) entities.spawnItem(tx*TS+TS/2, ty*TS, this.state==='small'?'mushroom':'flower');
+        } else if (meta === 'star') {
+          if (entities) entities.spawnItem(tx*TS+TS/2, ty*TS, 'star');
+        } else {
+          if (entities) entities.spawnCoin(tx*TS+8, ty*TS-TS, true);
+          sfx.play('coin');
+          this.collect('coin',1);
+        }
+      } else { // HIDDEN_1UP
+        if (entities) entities.spawnItem(tx*TS+TS/2, ty*TS, '1up');
+      }
+      sfx.play('break');
+    } else if (tile === T.BRICK) {
+      if (this.big) {
+        map.set(tx,ty,T.EMPTY);
+        if (entities) entities.spawnBrickParticles(tx*TS, ty*TS);
+        sfx.play('break');
+        this.score += 50;
+      } else {
+        sfx.play('break');
+      }
+    }
+  }
+
+  _hitBlockFromSide(tx, ty, map, sfx) {
+    // nothing special for side hits
+  }
+
+  _updateDead() {
+    this.deadTimer++;
+    if (this.deadTimer < 30) { /* pause */ return; }
+    this.vy = Math.min(this.vy + GRAVITY, MAX_FALL);
+    this.y += this.vy;
+  }
+
+  _updateFlagSlide(sfx) {
+    this.flagVY += 0.4;
+    this.flagVY = Math.min(this.flagVY, 4);
+    this.y += this.flagVY;
+    if (this.y >= this.flagY) {
+      this.y = this.flagY;
+      this.flagSlide = false;
+    }
+  }
+
+  startFlagSlide(poleX, bottomY, sfx) {
+    this.flagSlide = true;
+    this.x = poleX - this.w/2;
+    this.flagY = bottomY - this.h;
+    this.flagVY = 1;
+    this.vx = 0; this.vy = 0;
+    sfx.play('flagpole');
+  }
+
+  draw(ctx, camX, camY) {
+    if (this.dead && this.deadTimer < 30) return;
+    const sx = this.x - camX, sy = this.y - camY;
+    // fireballs
+    this.fireballs.forEach(fb => fb.draw(ctx, camX, camY));
+    drawMario(ctx, sx, sy, this.big, this.animFrame, this.dir, this.state, this.invincible>0, this.crouching);
+  }
+}
+
+// ============================================================
+// FIREBALL
+// ============================================================
+class Fireball {
+  constructor(x, y, dir) {
+    this.x = x - 6; this.y = y;
+    this.vx = dir * 7; this.vy = -3;
+    this.dir = dir; this.alive = true;
+    this.bounces = 0; this.frame = 0;
+  }
+  update(map) {
+    this.frame++;
+    this.vy += 0.5; this.x += this.vx; this.y += this.vy;
+    // bounce off ground
+    const bty = Math.floor((this.y+12)/TS), btx = Math.floor((this.x+6)/TS);
+    if (SOLID_TILES.has(map.get(btx,bty))) {
+      this.vy = -6; this.y = bty*TS-12;
+      this.bounces++;
+      if (this.bounces > 4) this.alive = false;
+    }
+    // hit wall
+    const wx = Math.floor((this.x+(this.vx>0?12:0))/TS);
+    if (SOLID_TILES.has(map.get(wx,Math.floor((this.y+6)/TS)))) this.alive = false;
+    // off screen / max distance
+    if (this.x < -200 || this.x > 9999 || this.y > 600) this.alive = false;
+  }
+  draw(ctx, camX, camY) {
+    drawFireball(ctx, this.x-camX, this.y-camY, this.frame);
+  }
+}
+
+
+// ===== src/entities.js =====
+// ============================================================
+// ENTITY MANAGER — enemies, items, spawning
+// ============================================================
+class EntityManager {
+  constructor(particles, sfx, player) {
+    this.enemies  = [];
+    this.items    = [];
+    this.coins    = []; // animated flying coins
+    this.particles = particles;
+    this.sfx = sfx;
+    this.player = player;
+  }
+
+  // Called from level loader
+  spawnEnemy(type, x, y, extra) {
+    switch(type) {
+      case 'goomba':    this.enemies.push(new Goomba(x,y)); break;
+      case 'koopa':     this.enemies.push(new Koopa(x,y)); break;
+      case 'fgoomba':   this.enemies.push(new FlyingGoomba(x,y)); break;
+      case 'piranha':   this.enemies.push(new PiranhaPlant(x,y,extra)); break;
+      case 'bullet':    this.enemies.push(new BulletBill(x,y,extra)); break;
+    }
+  }
+
+  spawnItem(x, y, type) {
+    this.items.push(new PowerUp(x, y, type));
+  }
+
+  spawnCoin(x, y, fromBlock=false) {
+    this.coins.push({ x, y, vy: fromBlock?-12:-8, life:40, fromBlock });
+  }
+
+  spawnBrickParticles(x, y) {
+    this.particles.add(x+TS/2, y+TS/2, 'brick', 10);
+  }
+
+  update(map, player) {
+    // Enemies
+    for (let i=this.enemies.length-1;i>=0;i--) {
+      const e=this.enemies[i];
+      e.update(map, player, this.enemies);
+
+      // Player vs enemy
+      if (!player.dead && !player.flagSlide && e.alive) {
+        if (rectsOverlap(player.x,player.y,player.w,player.h, e.x,e.y,e.w,e.h)) {
+          const prevBottom = player.y + player.h - player.vy;
+          const eTop = e.y;
+          // Stomp: player falling onto enemy top
+          if (player.vy > 0 && prevBottom <= eTop + 6) {
+            e.stomp(player, this.particles, this.sfx);
+            player.vy = player.running ? -10 : -8; // bounce
+            player.score += 100;
+            this.particles.addText(e.x, e.y-20, '+100');
+            this.sfx.play('stomp');
+          } else if (player.invincible > 0) {
+            e.kill(this.particles, this.sfx);
+            player.score += 200;
+          } else {
+            player.hurt(null);
+            this.sfx.play('death');
+          }
+        }
+      }
+
+      // Fireballs vs enemy
+      player.fireballs.forEach(fb => {
+        if (fb.alive && e.alive && rectsOverlap(fb.x,fb.y,12,12,e.x,e.y,e.w,e.h)) {
+          e.kill(this.particles, this.sfx);
+          fb.alive = false;
+          player.score += 200;
+          this.particles.addText(e.x, e.y-20, '+200');
+        }
+      });
+
+      if (!e.alive && e.deadTimer > 30) this.enemies.splice(i,1);
+    }
+
+    // Items
+    for (let i=this.items.length-1;i>=0;i--) {
+      const it=this.items[i];
+      it.update(map);
+      if (!it.collected && rectsOverlap(player.x,player.y,player.w,player.h,it.x,it.y,it.w,it.h)) {
+        it.collected=true;
+        if (it.type==='1up') { player.collect('1up'); this.sfx.play('1up'); this.particles.addText(it.x,it.y-20,'1UP!','#00FF00'); }
+        else { player.grow(it.type); this.sfx.play('powerup'); player.score+=1000; }
+        this.particles.add(it.x+it.w/2, it.y+it.h/2, 'powerup', 10);
+      }
+      if (it.collected && it.collectTimer > 20) this.items.splice(i,1);
+      if (it.collected) it.collectTimer = (it.collectTimer||0)+1;
+    }
+
+    // Flying coins
+    for (let i=this.coins.length-1;i>=0;i--) {
+      const c=this.coins[i];
+      c.vy += 0.8; c.y += c.vy; c.life--;
+      if (c.life <= 0) this.coins.splice(i,1);
+    }
+  }
+
+  draw(ctx, camX, camY, frame) {
+    this.enemies.forEach(e => e.draw(ctx, camX, camY, frame));
+    this.items.forEach(it => { if (!it.collected) it.draw(ctx, camX, camY, frame); });
+    this.coins.forEach(c => drawCoin(ctx, c.x-camX-8, c.y-camY-8, frame, false));
+  }
+}
+
+function rectsOverlap(ax,ay,aw,ah, bx,by,bw,bh) {
+  return ax<bx+bw && ax+aw>bx && ay<by+bh && ay+ah>by;
+}
+
+// ============================================================
+// BASE ENEMY
+// ============================================================
+class BaseEnemy {
+  constructor(x,y,w,h) { this.x=x;this.y=y;this.w=w;this.h=h;this.vx=-1.2;this.vy=0;this.alive=true;this.dead=false;this.deadTimer=0;this.dir=-1;this.frame=0; }
+  _baseUpdate(map) {
+    if (!this.alive) { this.deadTimer++; return false; }
+    this.frame++;
+    this.vy=Math.min(this.vy+GRAVITY,MAX_FALL);
+    this.x+=this.vx; this.y+=this.vy;
+    // Ground collision
+    const tx=Math.floor(this.x/TS), tx2=Math.floor((this.x+this.w-1)/TS);
+    const ty=Math.floor((this.y+this.h)/TS);
+    let grounded=false;
+    for (let ttx=tx;ttx<=tx2;ttx++) {
+      if (SOLID_TILES.has(map.get(ttx,ty))) { this.y=ty*TS-this.h; this.vy=0; grounded=true; break; }
+    }
+    // Wall / edge turn
+    const wtx = this.vx>0 ? Math.floor((this.x+this.w)/TS) : Math.floor(this.x/TS);
+    if (SOLID_TILES.has(map.get(wtx,Math.floor((this.y+this.h/2)/TS)))) {
+      this.vx *= -1; this.dir = this.vx > 0 ? 1 : -1;
+    }
+    // Edge detection (don't walk off)
+    if (grounded) {
+      const aheadX = this.vx>0 ? this.x+this.w+2 : this.x-2;
+      const aheadTX = Math.floor(aheadX/TS);
+      if (!SOLID_TILES.has(map.get(aheadTX, ty))) { this.vx*=-1; this.dir=this.vx>0?1:-1; }
+    }
+    return true;
+  }
+  kill(particles, sfx) { this.alive=false; if(particles) particles.add(this.x+this.w/2,this.y+this.h/2,'stomp',6); }
+  stomp(player, particles, sfx) { this.kill(particles,sfx); }
+}
+
+// ============================================================
+// GOOMBA
+// ============================================================
+class Goomba extends BaseEnemy {
+  constructor(x,y){ super(x,y,30,28); this.squished=false; this.squishTimer=0; }
+  update(map) {
+    if (this.squished) { this.squishTimer++; if(this.squishTimer>20) this.alive=false; return; }
+    this._baseUpdate(map);
+  }
+  stomp(player,particles,sfx) { this.squished=true; this.alive=false; this.deadTimer=0; }
+  draw(ctx,camX,camY,f) { if(!this.alive&&!this.squished) return; drawGoomba(ctx,this.x-camX,this.y-camY,f,this.squished); }
+}
+
+// ============================================================
+// KOOPA
+// ============================================================
+class Koopa extends BaseEnemy {
+  constructor(x,y){ super(x,y,28,36); this.inShell=false; this.shellVX=0; this.shellKickTimer=0; this.dir=-1; }
+  update(map, player) {
+    if (this.inShell) {
+      if (this.shellVX !== 0) {
+        this.x += this.shellVX; this.vy+=GRAVITY; this.y+=this.vy;
+        const ty=Math.floor((this.y+this.h)/TS), tx=Math.floor(this.x/TS), tx2=Math.floor((this.x+this.w-1)/TS);
+        for(let ttx=tx;ttx<=tx2;ttx++) if(SOLID_TILES.has(map.get(ttx,ty))){this.y=ty*TS-this.h;this.vy=0;break;}
+        const wtx=this.shellVX>0?Math.floor((this.x+this.w)/TS):Math.floor(this.x/TS);
+        if(SOLID_TILES.has(map.get(wtx,Math.floor((this.y+this.h/2)/TS)))){this.shellVX*=-1;}
+        this.frame++;
+      }
+      this.shellKickTimer = Math.max(0, this.shellKickTimer-1);
+      return;
+    }
+    this._baseUpdate(map);
+  }
+  stomp(player,particles,sfx) {
+    if (!this.inShell) { this.inShell=true; this.vx=0; this.shellVX=0; }
+    else {
+      const dir = player.x < this.x ? 1 : -1;
+      this.shellVX = dir * 9;
+    }
+  }
+  draw(ctx,camX,camY,f) { if(!this.alive) return; drawKoopa(ctx,this.x-camX,this.y-camY,f,this.inShell,this.dir,this.shellVX!==0); }
+}
+
+// ============================================================
+// FLYING GOOMBA
+// ============================================================
+class FlyingGoomba extends BaseEnemy {
+  constructor(x,y){ super(x,y,30,28); this.baseY=y; this.phase=Math.random()*Math.PI*2; }
+  update(map) {
+    if (!this.alive) { this.deadTimer++; return; }
+    this.frame++;
+    this.x += this.vx;
+    this.y = this.baseY + Math.sin(this.frame*0.04+this.phase)*30;
+    // turn at walls
+    const wtx=this.vx>0?Math.floor((this.x+this.w)/TS):Math.floor(this.x/TS);
+    if(SOLID_TILES.has(map.get(wtx,Math.floor(this.y/TS)+1))){this.vx*=-1;}
+  }
+  draw(ctx,camX,camY,f) { if(!this.alive) return; drawFlyingGoomba(ctx,this.x-camX,this.y-camY,f); }
+}
+
+// ============================================================
+// PIRANHA PLANT
+// ============================================================
+class PiranhaPlant {
+  constructor(x,y) {
+    this.x=x; this.y=y; this.w=28; this.h=40;
+    this.alive=true; this.deadTimer=0;
+    this.phase=0; this.timer=0; this.visible=false; this.pipeTopY=y;
+  }
+  update(map) {
+    if(!this.alive){this.deadTimer++;return;}
+    this.timer++;
+    // 0-60: hidden, 60-120: rising, 120-180: visible, 180-240: descending
+    const cycle = this.timer % 240;
+    if (cycle < 60) { this.visible=false; this.y=this.pipeTopY+this.h; }
+    else if (cycle < 120) { this.visible=true; this.y=this.pipeTopY+(60-(cycle-60))*this.h/60; }
+    else if (cycle < 180) { this.visible=true; this.y=this.pipeTopY; }
+    else { this.visible=true; this.y=this.pipeTopY+(cycle-180)*this.h/60; }
+  }
+  stomp(player,particles,sfx){ this.kill(particles,sfx); }
+  kill(particles,sfx){ this.alive=false; if(particles) particles.add(this.x+14,this.y+20,'stomp',6); }
+  draw(ctx,camX,camY,f){ if(!this.alive) return; drawPiranhaPlant(ctx,this.x-camX,this.y-camY,f,this.visible); }
+}
+
+// ============================================================
+// BULLET BILL
+// ============================================================
+class BulletBill extends BaseEnemy {
+  constructor(x,y,dir=1){ super(x,y,38,28); this.vx=(dir||1)*3.5; this.dir=dir||1; this.gravityEnabled=false; }
+  update(map) {
+    if(!this.alive){this.deadTimer++;return;}
+    this.frame++;
+    this.x+=this.vx;
+    if(this.x<-200||this.x>99999) this.alive=false;
+  }
+  draw(ctx,camX,camY,f){ if(!this.alive) return; drawBulletBill(ctx,this.x-camX,this.y-camY); }
+}
+
+// ============================================================
+// POWER-UP ITEM
+// ============================================================
+class PowerUp {
+  constructor(x,y,type){ this.x=x-14;this.y=y;this.w=28;this.h=28;this.type=type;this.vy=-3;this.vx=1.5;this.collected=false;this.collectTimer=0;this.frame=0;this.emerging=true;this.emergeY=y;this.emergeTarget=y-TS; }
+  update(map) {
+    this.frame++;
+    if(this.emerging){ this.y=Math.max(this.y-1,this.emergeTarget); if(this.y<=this.emergeTarget) this.emerging=false; return; }
+    if(this.type==='star'||this.type==='mushroom'||this.type==='1up'){
+      this.vy=Math.min(this.vy+GRAVITY,MAX_FALL); this.x+=this.vx; this.y+=this.vy;
+      // ground
+      const ty=Math.floor((this.y+this.h)/TS), tx=Math.floor(this.x/TS), tx2=Math.floor((this.x+this.w-1)/TS);
+      for(let ttx=tx;ttx<=tx2;ttx++) if(SOLID_TILES.has(map.get(ttx,ty))){this.y=ty*TS-this.h;this.vy=this.type==='star'?-8:0;break;}
+      // wall
+      const wtx=this.vx>0?Math.floor((this.x+this.w)/TS):Math.floor(this.x/TS);
+      if(SOLID_TILES.has(map.get(wtx,Math.floor((this.y+this.h/2)/TS)))){this.vx*=-1;}
+    }
+  }
+  draw(ctx,camX,camY,f){
+    const sx=this.x-camX, sy=this.y-camY;
+    if(this.type==='mushroom'||this.type==='1up') drawMushroom(ctx,sx,sy,this.type);
+    else if(this.type==='flower') drawFireFlower(ctx,sx,sy,f);
+    else if(this.type==='star') drawStar(ctx,sx,sy,f);
+  }
+}
+
+
+// ===== src/levels.js =====
+// ============================================================
+// LEVEL DEFINITIONS — 20 levels across 4 worlds
+// Each level: { width, height, theme, timeLimit, startX, startY,
+//               blueprint: [...tile cmds],
+//               enemies: [{type,x,y,?dir}],
+//               items: [] }
+// Coordinates in TILES. Enemies/items use TILE coordinates (converted to pixels by loader).
+// ============================================================
+
+const LEVEL_DEFS = [
+
+// ——— WORLD 1: GREEN PLAINS ———
+
+{ // 1-1: Tutorial level — classic intro
+  id:'1-1', world:1, level:1, theme:'plains', timeLimit:400,
+  width:210, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,209,T.GROUND],
+    ['row',13, 0,  9,T.GROUND],
+    ['tile',15, 8,T.QUESTION,'coin'],
+    ['tile',16, 8,T.QUESTION,'mushroom'],
+    ['tile',17, 8,T.QUESTION,'coin'],
+    ['tile',14, 8,T.BRICK],
+    ['tile',18, 8,T.BRICK],
+    ['pipe', 28,13,2],
+    ['pipe', 38,12,3],
+    ['pipe', 55,11,4],
+    ['row',10, 70, 75,T.BRICK],
+    ['tile',72,10,T.QUESTION,'coin'],
+    ['row', 8, 80, 88,T.BRICK],
+    ['tile',84, 8,T.QUESTION,'star'],
+    ['row',10, 96,104,T.PLATFORM],
+    ['row', 8,100,108,T.PLATFORM],
+    ['tile',113, 8,T.QUESTION,'coin'],
+    ['tile',114, 8,T.QUESTION,'coin'],
+    ['tile',115, 8,T.QUESTION,'coin'],
+    ['pipe',122,13,2],
+    ['row', 9,130,136,T.BRICK],
+    ['tile',133, 9,T.QUESTION,'flower'],
+    ['row',11,140,150,T.BRICK],
+    ['tile',145,11,T.HIDDEN_1UP],
+    ['stair_r',163,14,8,T.STAIR],
+    ['stair_l',178,14,5,T.STAIR],
+    ['stair_r',182,14,8,T.STAIR],
+    ['flagpole',198,4,13],
+  ],
+  enemies:[
+    {type:'goomba',tx:22,ty:13},
+    {type:'goomba',tx:40,ty:13},
+    {type:'goomba',tx:42,ty:13},
+    {type:'goomba',tx:62,ty:13},
+    {type:'koopa', tx:70,ty:13},
+    {type:'goomba',tx:88,ty:13},
+    {type:'goomba',tx:95,ty:13},
+    {type:'goomba',tx:106,ty:13},
+    {type:'goomba',tx:110,ty:13},
+    {type:'koopa', tx:120,ty:13},
+    {type:'goomba',tx:130,ty:13},
+    {type:'goomba',tx:135,ty:13},
+    {type:'goomba',tx:148,ty:13},
+    {type:'goomba',tx:150,ty:13},
+    {type:'koopa', tx:160,ty:13},
+  ],
+},
+
+{ // 1-2: Underground — coins, bricks, lots of action
+  id:'1-2', world:1, level:2, theme:'underground', timeLimit:350,
+  width:200, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,199,T.DARK],
+    ['row',13, 0,  6,T.DARK],
+    ['row',13,194,199,T.DARK],
+    ['fill',0,0,199,2,T.DARK],
+    // ceiling bricks
+    ['row', 0, 0,199,T.BRICK],
+    // passages
+    ['row', 9,20, 45,T.BRICK],
+    ['row', 9,60, 90,T.BRICK],
+    ['row', 7,50, 60,T.BRICK],
+    ['tile',25, 9,T.QUESTION,'coin'],
+    ['tile',30, 9,T.QUESTION,'mushroom'],
+    ['tile',35, 9,T.QUESTION,'coin'],
+    ['tile',40, 9,T.QUESTION,'coin'],
+    ['row', 9,100,130,T.BRICK],
+    ['tile',110, 9,T.QUESTION,'flower'],
+    ['tile',115, 9,T.QUESTION,'coin'],
+    ['tile',120, 9,T.QUESTION,'coin'],
+    // Platforms mid level
+    ['row',11, 65, 80,T.BRICK],
+    ['row',11, 95,115,T.BRICK],
+    // Coins in arcs
+    ['row', 5,20, 40,T.EMPTY], // already empty
+    ['stair_r',160,14,6,T.DARK],
+    ['stair_l',175,14,6,T.DARK],
+    ['stair_r',180,14,8,T.DARK],
+    ['flagpole',196,4,13],
+  ],
+  enemies:[
+    {type:'goomba',tx:18,ty:13},{type:'goomba',tx:22,ty:13},
+    {type:'koopa', tx:50,ty:13},{type:'goomba',tx:60,ty:13},
+    {type:'goomba',tx:72,ty:13},{type:'goomba',tx:78,ty:13},
+    {type:'koopa', tx:85,ty:13},{type:'goomba',tx:95,ty:13},
+    {type:'goomba',tx:100,ty:13},{type:'goomba',tx:110,ty:13},
+    {type:'koopa', tx:120,ty:13},{type:'koopa',tx:130,ty:13},
+    {type:'goomba',tx:140,ty:13},{type:'goomba',tx:145,ty:13},
+    {type:'goomba',tx:155,ty:13},
+  ],
+},
+
+{ // 1-3: Treetop — moving platforms, flying enemies
+  id:'1-3', world:1, level:3, theme:'plains', timeLimit:350,
+  width:200, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,  8,T.GROUND],
+    ['row',14,190,199,T.GROUND],
+    ['row',13, 0,  8,T.GROUND],
+    // Floating platforms
+    ['row',10, 12, 18,T.PLATFORM],
+    ['row', 8, 24, 30,T.PLATFORM],
+    ['row',10, 36, 44,T.PLATFORM],
+    ['row', 7, 48, 55,T.PLATFORM],
+    ['row',10, 60, 68,T.PLATFORM],
+    ['row', 8, 74, 82,T.PLATFORM],
+    ['row',11, 88, 96,T.PLATFORM],
+    ['row', 9,100,110,T.PLATFORM],
+    ['row',11,115,125,T.PLATFORM],
+    ['row', 8,130,140,T.PLATFORM],
+    ['row',10,145,158,T.PLATFORM],
+    ['row', 8,162,172,T.PLATFORM],
+    ['row',11,176,186,T.PLATFORM],
+    // Question blocks on platforms
+    ['tile',14, 9,T.QUESTION,'coin'],
+    ['tile',26, 7,T.QUESTION,'mushroom'],
+    ['tile',50, 6,T.QUESTION,'flower'],
+    ['tile',78, 7,T.QUESTION,'coin'],
+    ['tile',104, 8,T.QUESTION,'star'],
+    ['tile',150, 7,T.QUESTION,'coin'],
+    ['stair_r',188,14,4,T.STAIR],
+    ['flagpole',196,4,13],
+  ],
+  enemies:[
+    {type:'fgoomba',tx:15,ty:8},{type:'fgoomba',tx:28,ty:6},
+    {type:'fgoomba',tx:50,ty:5},{type:'fgoomba',tx:64,ty:8},
+    {type:'koopa',  tx:76,ty:12},{type:'fgoomba',tx:90,ty:7},
+    {type:'fgoomba',tx:104,ty:7},{type:'goomba', tx:118,ty:12},
+    {type:'fgoomba',tx:132,ty:6},{type:'fgoomba',tx:148,ty:7},
+    {type:'fgoomba',tx:164,ty:6},{type:'koopa',  tx:178,ty:12},
+  ],
+},
+
+{ // 1-4: Castle — lava, platforming
+  id:'1-4', world:1, level:4, theme:'underground', timeLimit:300,
+  width:180, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,179,T.DARK],
+    ['row',13, 0,  6,T.DARK],
+    ['fill',0, 0,179,1,T.CASTLE],
+    // lava pits
+    ['row',14, 30, 38,T.LAVA],['row',13,30,38,T.LAVA],
+    ['row',14, 70, 82,T.LAVA],['row',13,70,82,T.LAVA],
+    ['row',14,115,128,T.LAVA],['row',13,115,128,T.LAVA],
+    // platforms over lava
+    ['row',10, 32, 36,T.PLATFORM],
+    ['row', 9, 72, 76,T.PLATFORM],['row', 9, 78, 82,T.PLATFORM],
+    ['row', 9,117,121,T.PLATFORM],['row', 9,123,127,T.PLATFORM],
+    // bricks
+    ['row', 8, 20, 30,T.BRICK],
+    ['tile',25, 8,T.QUESTION,'flower'],
+    ['row', 7, 50, 65,T.BRICK],
+    ['row', 8, 90,105,T.CASTLE],
+    ['row', 6,130,145,T.BRICK],
+    ['tile',137, 6,T.QUESTION,'star'],
+    ['stair_r',158,14,8,T.CASTLE],
+    ['stair_l',172,14,6,T.CASTLE],
+    ['stair_r',173,14,6,T.CASTLE],
+    ['flagpole',176,4,13],
+  ],
+  enemies:[
+    {type:'goomba',tx:20,ty:13},{type:'koopa',tx:28,ty:13},
+    {type:'goomba',tx:45,ty:13},{type:'goomba',tx:50,ty:13},
+    {type:'koopa', tx:60,ty:13},{type:'goomba',tx:85,ty:13},
+    {type:'goomba',tx:90,ty:13},{type:'koopa', tx:95,ty:13},
+    {type:'koopa', tx:110,ty:13},{type:'goomba',tx:130,ty:13},
+    {type:'goomba',tx:140,ty:13},{type:'koopa', tx:150,ty:13},
+    {type:'koopa', tx:155,ty:13},
+  ],
+},
+
+{ // 1-5: Sky world — clouds, bullet bills
+  id:'1-5', world:1, level:5, theme:'plains', timeLimit:320,
+  width:200, height:15,
+  startTX:3, startTY:12,
+  blueprint:[
+    ['row',14, 0, 6,T.CLOUD],['row',13,0,6,T.SOLID],
+    ['row',14,192,199,T.CLOUD],['row',13,192,199,T.SOLID],
+    ['row',12, 0, 6,T.SOLID],
+    // Cloud islands
+    ['row',12, 10, 18,T.CLOUD],['row',13,10,18,T.SOLID],['row',14,10,18,T.SOLID],
+    ['row',10, 22, 30,T.CLOUD],['row',11,22,30,T.SOLID],
+    ['row',12, 35, 44,T.CLOUD],['row',13,35,44,T.SOLID],
+    ['row',10, 50, 58,T.CLOUD],['row',11,50,58,T.SOLID],
+    ['row',12, 64, 72,T.CLOUD],['row',13,64,72,T.SOLID],
+    ['row',10, 80, 90,T.CLOUD],['row',11,80,90,T.SOLID],
+    ['row', 8, 94,104,T.CLOUD],['row', 9,94,104,T.SOLID],
+    ['row',11,108,118,T.CLOUD],['row',12,108,118,T.SOLID],
+    ['row', 9,122,132,T.CLOUD],['row',10,122,132,T.SOLID],
+    ['row',12,138,150,T.CLOUD],['row',13,138,150,T.SOLID],
+    ['row',10,155,165,T.CLOUD],['row',11,155,165,T.SOLID],
+    ['row',12,170,182,T.CLOUD],['row',13,170,182,T.SOLID],
+    ['row',12,186,199,T.CLOUD],['row',13,186,199,T.SOLID],
+    // Items on clouds
+    ['tile',12,11,T.QUESTION,'mushroom'],
+    ['tile',53, 9,T.QUESTION,'flower'],
+    ['tile',84, 9,T.QUESTION,'star'],
+    ['tile',124, 8,T.QUESTION,'coin'],
+    ['flagpole',196,4,12],
+  ],
+  enemies:[
+    {type:'fgoomba',tx:14,ty:9},{type:'fgoomba',tx:25,ty:7},
+    {type:'fgoomba',tx:38,ty:9},{type:'bullet',  tx:60,ty:10,dir:-1},
+    {type:'fgoomba',tx:66,ty:9},{type:'fgoomba',tx:82,ty:7},
+    {type:'bullet',  tx:100,ty:8,dir:-1},{type:'fgoomba',tx:110,ty:9},
+    {type:'fgoomba',tx:124,ty:7},{type:'fgoomba',tx:140,ty:9},
+    {type:'bullet',  tx:158,ty:9,dir:-1},{type:'fgoomba',tx:172,ty:9},
+  ],
+},
+
+// ——— WORLD 2: DESERT ———
+
+{ // 2-1: Sandy plains
+  id:'2-1', world:2, level:1, theme:'desert', timeLimit:380,
+  width:210, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,209,T.SAND],
+    ['row',13, 0, 10,T.SAND],
+    ['tile',15, 8,T.QUESTION,'coin'],
+    ['tile',16, 8,T.QUESTION,'mushroom'],
+    ['tile',20, 8,T.QUESTION,'coin'],
+    ['pipe', 30,13,2],['pipe',44,13,3],['pipe',60,12,4],
+    ['row',10, 75, 85,T.BRICK],
+    ['tile',80,10,T.QUESTION,'coin'],
+    ['row', 8, 95,105,T.SAND],
+    ['row', 8,115,130,T.BRICK],
+    ['tile',120, 8,T.QUESTION,'flower'],
+    ['tile',125, 8,T.QUESTION,'star'],
+    ['row',10,140,155,T.PLATFORM],
+    ['row',12,160,170,T.SAND],
+    ['pipe',175,13,3],
+    ['stair_r',188,14,8,T.SAND],
+    ['stair_l',200,14,5,T.SAND],
+    ['stair_r',203,14,5,T.SAND],
+    ['flagpole',207,4,13],
+  ],
+  enemies:[
+    {type:'goomba',tx:22,ty:13},{type:'goomba',tx:24,ty:13},
+    {type:'koopa', tx:40,ty:13},{type:'goomba',tx:52,ty:13},
+    {type:'goomba',tx:68,ty:13},{type:'goomba',tx:72,ty:13},
+    {type:'koopa', tx:80,ty:13},{type:'goomba',tx:92,ty:13},
+    {type:'koopa', tx:100,ty:13},{type:'goomba',tx:112,ty:13},
+    {type:'goomba',tx:118,ty:13},{type:'koopa', tx:128,ty:13},
+    {type:'koopa', tx:140,ty:13},{type:'goomba',tx:155,ty:13},
+    {type:'goomba',tx:162,ty:13},{type:'koopa', tx:178,ty:13},
+  ],
+},
+
+{ // 2-2: Desert cave — underground, cramped
+  id:'2-2', world:2, level:2, theme:'underground', timeLimit:320,
+  width:200, height:15,
+  startTX:3, startTY:12,
+  blueprint:[
+    ['row',14, 0,199,T.SAND],
+    ['fill',0, 0,199,1,T.DARK],
+    ['row', 0, 0,199,T.DARK],
+    // Multi-level platforms
+    ['row', 8, 15, 30,T.BRICK],['row', 8, 45, 60,T.SAND],
+    ['row',11, 20, 35,T.SAND], ['row',11, 50, 65,T.BRICK],
+    ['row', 8, 70, 85,T.SAND], ['row',11, 75, 90,T.BRICK],
+    ['row', 8,100,115,T.BRICK],['row',11,105,120,T.SAND],
+    ['row', 8,130,145,T.SAND], ['row',11,135,150,T.BRICK],
+    ['tile',22, 8,T.QUESTION,'mushroom'],
+    ['tile',52, 8,T.QUESTION,'coin'],
+    ['tile',78, 8,T.QUESTION,'flower'],
+    ['tile',108, 8,T.QUESTION,'coin'],
+    ['tile',138, 8,T.QUESTION,'star'],
+    ['pipe', 25,13,2],['pipe', 55,13,2],['pipe',100,13,2],['pipe',155,13,2],
+    ['stair_r',175,14,8,T.SAND],
+    ['flagpole',195,4,13],
+  ],
+  enemies:[
+    {type:'goomba',tx:18,ty:13},{type:'koopa',tx:30,ty:13},
+    {type:'goomba',tx:40,ty:13},{type:'goomba',tx:48,ty:13},
+    {type:'koopa', tx:60,ty:13},{type:'goomba',tx:75,ty:13},
+    {type:'goomba',tx:82,ty:13},{type:'koopa', tx:92,ty:13},
+    {type:'goomba',tx:104,ty:13},{type:'goomba',tx:112,ty:13},
+    {type:'koopa', tx:122,ty:13},{type:'goomba',tx:140,ty:13},
+    {type:'goomba',tx:148,ty:13},{type:'koopa', tx:158,ty:13},
+    {type:'goomba',tx:165,ty:13},{type:'goomba',tx:170,ty:13},
+  ],
+},
+
+{ // 2-3: Oasis — piranha plants, more vertical
+  id:'2-3', world:2, level:3, theme:'desert', timeLimit:350,
+  width:200, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,199,T.SAND],
+    ['row',13, 0,  8,T.SAND],
+    ['row',13,190,199,T.SAND],
+    ['pipe', 20,13,3],['pipe', 35,13,3],['pipe', 70,13,4],
+    ['pipe', 90,13,3],['pipe',130,13,4],['pipe',155,13,3],
+    ['row',10, 40, 55,T.BRICK],
+    ['row', 8, 50, 65,T.SAND],
+    ['row',11, 80, 95,T.PLATFORM],
+    ['row', 9,100,115,T.BRICK],
+    ['row',11,120,135,T.PLATFORM],
+    ['row', 8,140,155,T.SAND],
+    ['tile',44,10,T.QUESTION,'mushroom'],
+    ['tile',54, 8,T.QUESTION,'coin'],
+    ['tile',104, 9,T.QUESTION,'flower'],
+    ['tile',144, 8,T.QUESTION,'star'],
+    ['stair_r',175,14,8,T.SAND],
+    ['stair_l',186,14,5,T.SAND],
+    ['stair_r',187,14,5,T.SAND],
+    ['flagpole',196,4,13],
+  ],
+  enemies:[
+    {type:'piranha',tx:20,ty:11},{type:'piranha',tx:35,ty:11},
+    {type:'goomba', tx:45,ty:13},{type:'koopa',  tx:52,ty:13},
+    {type:'piranha',tx:70,ty:10},{type:'goomba', tx:80,ty:13},
+    {type:'goomba', tx:84,ty:13},{type:'piranha',tx:90,ty:11},
+    {type:'koopa',  tx:96,ty:13},{type:'goomba', tx:108,ty:13},
+    {type:'piranha',tx:130,ty:10},{type:'koopa', tx:138,ty:13},
+    {type:'piranha',tx:155,ty:11},{type:'goomba',tx:162,ty:13},
+    {type:'goomba', tx:168,ty:13},{type:'koopa', tx:172,ty:13},
+  ],
+},
+
+{ // 2-4: Desert pyramid — stairs and traps
+  id:'2-4', world:2, level:4, theme:'desert', timeLimit:340,
+  width:200, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,199,T.SAND],
+    ['row',13, 0,  6,T.SAND],
+    ['row',14, 40, 50,T.LAVA],['row',13,40,50,T.LAVA],
+    ['row',14, 90,104,T.LAVA],['row',13,90,104,T.LAVA],
+    ['row',14,140,155,T.LAVA],['row',13,140,155,T.LAVA],
+    ['row',11, 42, 48,T.SAND],
+    ['row',10, 92,102,T.SAND],['row', 9, 93,101,T.SAND],
+    ['row',10,142,153,T.SAND],['row', 9,144,151,T.SAND],
+    // Pyramid-like structures
+    ['stair_r', 20,14,6,T.SAND],['stair_l', 31,14,6,T.SAND],
+    ['stair_r', 60,14,8,T.SAND],['stair_l', 73,14,8,T.SAND],
+    ['stair_r',110,14,6,T.SAND],['stair_l',121,14,6,T.SAND],
+    ['stair_r',162,14,8,T.SAND],
+    ['tile',25, 8,T.QUESTION,'mushroom'],
+    ['tile',65, 6,T.QUESTION,'flower'],
+    ['tile',113, 8,T.QUESTION,'star'],
+    ['flagpole',195,4,13],
+  ],
+  enemies:[
+    {type:'goomba',tx:18,ty:13},{type:'goomba',tx:20,ty:13},
+    {type:'koopa', tx:38,ty:13},{type:'goomba',tx:55,ty:13},
+    {type:'goomba',tx:58,ty:13},{type:'koopa', tx:80,ty:13},
+    {type:'koopa', tx:85,ty:13},{type:'goomba',tx:108,ty:13},
+    {type:'goomba',tx:112,ty:13},{type:'koopa', tx:125,ty:13},
+    {type:'koopa', tx:130,ty:13},{type:'goomba',tx:158,ty:13},
+    {type:'goomba',tx:162,ty:13},{type:'koopa', tx:170,ty:13},
+    {type:'koopa', tx:175,ty:13},{type:'goomba',tx:182,ty:13},
+  ],
+},
+
+{ // 2-5: Desert boss castle
+  id:'2-5', world:2, level:5, theme:'castle', timeLimit:300,
+  width:180, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,179,T.CASTLE],
+    ['fill',0, 0,179,1,T.CASTLE],
+    ['row',14, 25, 35,T.LAVA],['row',13,25,35,T.LAVA],
+    ['row',14, 55, 70,T.LAVA],['row',13,55,70,T.LAVA],
+    ['row',14, 95,110,T.LAVA],['row',13,95,110,T.LAVA],
+    ['row',14,130,148,T.LAVA],['row',13,130,148,T.LAVA],
+    ['row',11, 27, 33,T.CASTLE],
+    ['row', 9, 57, 68,T.CASTLE],['row', 8, 59, 66,T.CASTLE],
+    ['row',10, 97,108,T.CASTLE],['row', 8,99,106,T.CASTLE],
+    ['row', 9,132,146,T.CASTLE],
+    ['row', 8, 10, 22,T.BRICK],
+    ['tile',16, 8,T.QUESTION,'flower'],
+    ['row', 8, 75, 90,T.BRICK],
+    ['tile',82, 8,T.QUESTION,'star'],
+    ['stair_r',156,14,8,T.CASTLE],
+    ['stair_l',170,14,6,T.CASTLE],
+    ['stair_r',171,14,6,T.CASTLE],
+    ['flagpole',176,4,13],
+  ],
+  enemies:[
+    {type:'koopa',tx:18,ty:13},{type:'koopa',tx:22,ty:13},
+    {type:'goomba',tx:38,ty:13},{type:'koopa',tx:45,ty:13},
+    {type:'goomba',tx:52,ty:13},{type:'koopa',tx:72,ty:13},
+    {type:'koopa',tx:78,ty:13},{type:'goomba',tx:92,ty:13},
+    {type:'koopa',tx:96,ty:13},{type:'koopa',tx:114,ty:13},
+    {type:'goomba',tx:120,ty:13},{type:'koopa',tx:126,ty:13},
+    {type:'koopa',tx:152,ty:13},{type:'koopa',tx:156,ty:13},
+  ],
+},
+
+// ——— WORLD 3: ICE ———
+
+{ // 3-1: Icy plains — slippery!
+  id:'3-1', world:3, level:1, theme:'ice', timeLimit:360,
+  width:210, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,209,T.ICE],
+    ['row',13, 0, 10,T.ICE],
+    ['tile',14, 8,T.QUESTION,'mushroom'],
+    ['tile',18, 8,T.QUESTION,'coin'],
+    ['tile',22, 8,T.QUESTION,'coin'],
+    ['pipe', 30,13,2],['pipe', 45,13,3],
+    ['row',10, 55, 68,T.ICE],
+    ['row', 8, 70, 82,T.ICE],
+    ['row',10, 88,100,T.ICE],
+    ['tile',60,10,T.QUESTION,'coin'],
+    ['tile',75, 8,T.QUESTION,'flower'],
+    ['tile',92,10,T.QUESTION,'star'],
+    ['pipe', 110,13,3],
+    ['row',10,118,130,T.PLATFORM],
+    ['row', 8,135,148,T.ICE],
+    ['row',10,152,165,T.PLATFORM],
+    ['tile',140, 8,T.QUESTION,'coin'],
+    ['tile',155,10,T.QUESTION,'mushroom'],
+    ['pipe',172,13,2],
+    ['stair_r',182,14,8,T.ICE],
+    ['stair_l',194,14,5,T.ICE],
+    ['stair_r',196,14,5,T.ICE],
+    ['flagpole',203,4,13],
+  ],
+  enemies:[
+    {type:'koopa',tx:22,ty:13},{type:'goomba',tx:28,ty:13},
+    {type:'koopa',tx:40,ty:13},{type:'koopa',tx:52,ty:13},
+    {type:'goomba',tx:62,ty:13},{type:'goomba',tx:68,ty:13},
+    {type:'koopa',tx:74,ty:13},{type:'fgoomba',tx:90,ty:8},
+    {type:'koopa',tx:100,ty:13},{type:'koopa',tx:106,ty:13},
+    {type:'fgoomba',tx:120,ty:7},{type:'goomba',tx:130,ty:13},
+    {type:'koopa',tx:140,ty:13},{type:'fgoomba',tx:155,ty:8},
+    {type:'koopa',tx:165,ty:13},{type:'koopa',tx:172,ty:13},
+  ],
+},
+
+{ // 3-2: Ice cave
+  id:'3-2', world:3, level:2, theme:'underground', timeLimit:330,
+  width:200, height:15,
+  startTX:3, startTY:12,
+  blueprint:[
+    ['row',14, 0,199,T.ICE],
+    ['fill',0, 0,199,1,T.ICE],
+    ['row', 0, 0,199,T.ICE],
+    ['row', 8, 15, 30,T.ICE],['row', 8, 50, 65,T.ICE],
+    ['row',11, 25, 40,T.ICE],['row',11, 68, 82,T.ICE],
+    ['row', 8, 88,103,T.ICE],['row',11, 95,110,T.ICE],
+    ['row', 8,118,135,T.ICE],['row',11,125,140,T.PLATFORM],
+    ['row', 8,148,165,T.ICE],
+    ['tile',20, 8,T.QUESTION,'mushroom'],
+    ['tile',54, 8,T.QUESTION,'coin'],
+    ['tile',92, 8,T.QUESTION,'flower'],
+    ['tile',122, 8,T.QUESTION,'star'],
+    ['tile',152, 8,T.QUESTION,'coin'],
+    ['pipe',28,13,2],['pipe',60,13,2],['pipe',105,13,2],['pipe',158,13,2],
+    ['stair_r',174,14,8,T.ICE],
+    ['flagpole',193,4,13],
+  ],
+  enemies:[
+    {type:'koopa',tx:18,ty:13},{type:'koopa',tx:22,ty:13},
+    {type:'goomba',tx:35,ty:13},{type:'koopa',tx:45,ty:13},
+    {type:'koopa',tx:55,ty:13},{type:'goomba',tx:68,ty:13},
+    {type:'koopa',tx:78,ty:13},{type:'goomba',tx:88,ty:13},
+    {type:'koopa',tx:95,ty:13},{type:'koopa',tx:112,ty:13},
+    {type:'goomba',tx:120,ty:13},{type:'fgoomba',tx:130,ty:7},
+    {type:'koopa',tx:142,ty:13},{type:'koopa',tx:150,ty:13},
+    {type:'goomba',tx:162,ty:13},{type:'koopa',tx:168,ty:13},
+  ],
+},
+
+{ // 3-3: Blizzard — many enemies
+  id:'3-3', world:3, level:3, theme:'ice', timeLimit:320,
+  width:210, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,209,T.ICE],
+    ['row',13, 0, 8,T.ICE],
+    ['row',14, 28, 36,T.LAVA],['row',13,28,36,T.LAVA],
+    ['row',14, 65, 75,T.LAVA],['row',13,65,75,T.LAVA],
+    ['row',14,110,122,T.LAVA],['row',13,110,122,T.LAVA],
+    ['row',14,155,168,T.LAVA],['row',13,155,168,T.LAVA],
+    ['row',11, 30, 35,T.ICE],['row',10, 67, 73,T.ICE],
+    ['row',11,112,120,T.ICE],['row',10,157,166,T.ICE],
+    ['row', 8, 15, 26,T.BRICK],['tile',20, 8,T.QUESTION,'mushroom'],
+    ['row', 8, 45, 58,T.ICE],  ['tile',51, 8,T.QUESTION,'coin'],
+    ['row', 8, 80, 92,T.BRICK],['tile',86, 8,T.QUESTION,'flower'],
+    ['row', 8,128,140,T.ICE],  ['tile',134, 8,T.QUESTION,'star'],
+    ['stair_r',185,14,8,T.ICE],
+    ['stair_l',196,14,5,T.ICE],
+    ['stair_r',198,14,5,T.ICE],
+    ['flagpole',205,4,13],
+  ],
+  enemies:[
+    {type:'koopa',tx:18,ty:13},{type:'koopa',tx:22,ty:13},{type:'goomba',tx:24,ty:13},
+    {type:'fgoomba',tx:32,ty:8},{type:'koopa',tx:42,ty:13},{type:'koopa',tx:46,ty:13},
+    {type:'fgoomba',tx:50,ty:7},{type:'koopa',tx:58,ty:13},{type:'goomba',tx:62,ty:13},
+    {type:'fgoomba',tx:70,ty:6},{type:'koopa',tx:78,ty:13},{type:'koopa',tx:82,ty:13},
+    {type:'koopa',tx:90,ty:13},{type:'fgoomba',tx:95,ty:7},{type:'koopa',tx:105,ty:13},
+    {type:'koopa',tx:108,ty:13},{type:'fgoomba',tx:115,ty:8},{type:'koopa',tx:125,ty:13},
+    {type:'koopa',tx:130,ty:13},{type:'fgoomba',tx:138,ty:7},{type:'koopa',tx:148,ty:13},
+    {type:'koopa',tx:152,ty:13},{type:'fgoomba',tx:160,ty:8},{type:'koopa',tx:172,ty:13},
+  ],
+},
+
+{ // 3-4: Frozen castle — moving platforms + ice
+  id:'3-4', world:3, level:4, theme:'castle', timeLimit:310,
+  width:180, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,179,T.ICE],
+    ['fill',0, 0,179,1,T.CASTLE],
+    ['row',14, 22, 32,T.LAVA],['row',13,22,32,T.LAVA],
+    ['row',14, 58, 72,T.LAVA],['row',13,58,72,T.LAVA],
+    ['row',14,100,116,T.LAVA],['row',13,100,116,T.LAVA],
+    ['row',14,140,156,T.LAVA],['row',13,140,156,T.LAVA],
+    ['row',11, 24, 30,T.ICE],
+    ['row', 9, 60, 70,T.CASTLE],
+    ['row',10,102,114,T.ICE],['row', 9,105,111,T.ICE],
+    ['row', 9,142,154,T.CASTLE],
+    ['row', 8, 10, 20,T.BRICK],['tile',15, 8,T.QUESTION,'flower'],
+    ['row', 8, 40, 55,T.CASTLE],
+    ['row', 8, 78, 92,T.BRICK],['tile',85, 8,T.QUESTION,'star'],
+    ['row', 7,118,132,T.ICE],
+    ['stair_r',158,14,8,T.CASTLE],
+    ['stair_l',170,14,6,T.CASTLE],
+    ['stair_r',171,14,6,T.CASTLE],
+    ['flagpole',175,4,13],
+  ],
+  enemies:[
+    {type:'koopa',tx:16,ty:13},{type:'koopa',tx:20,ty:13},
+    {type:'koopa',tx:35,ty:13},{type:'goomba',tx:42,ty:13},
+    {type:'koopa',tx:48,ty:13},{type:'koopa',tx:55,ty:13},
+    {type:'fgoomba',tx:65,ty:8},{type:'koopa',tx:75,ty:13},
+    {type:'koopa',tx:80,ty:13},{type:'goomba',tx:95,ty:13},
+    {type:'koopa',tx:100,ty:13},{type:'koopa',tx:118,ty:13},
+    {type:'fgoomba',tx:125,ty:7},{type:'koopa',tx:135,ty:13},
+    {type:'koopa',tx:140,ty:13},{type:'koopa',tx:155,ty:13},
+  ],
+},
+
+{ // 3-5: Blizzard boss area
+  id:'3-5', world:3, level:5, theme:'ice', timeLimit:300,
+  width:190, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,189,T.ICE],
+    ['row',13, 0,  6,T.ICE],
+    ['row',14, 20, 30,T.LAVA],['row',13,20,30,T.LAVA],
+    ['row',14, 50, 64,T.LAVA],['row',13,50,64,T.LAVA],
+    ['row',14, 88,104,T.LAVA],['row',13,88,104,T.LAVA],
+    ['row',14,128,145,T.LAVA],['row',13,128,145,T.LAVA],
+    ['row',11, 22, 28,T.ICE],
+    ['row', 9, 52, 62,T.ICE],['row', 8, 54, 60,T.ICE],
+    ['row', 9, 90,102,T.ICE],['row', 8, 92,100,T.ICE],
+    ['row', 9,130,143,T.ICE],
+    ['row', 7, 10, 18,T.BRICK],['tile',14, 7,T.QUESTION,'mushroom'],
+    ['row', 7, 38, 48,T.ICE],  ['tile',43, 7,T.QUESTION,'flower'],
+    ['row', 7, 72, 84,T.BRICK],['tile',78, 7,T.QUESTION,'star'],
+    ['row', 7,114,126,T.ICE],  ['tile',120, 7,T.QUESTION,'star'],
+    ['stair_r',158,14,8,T.ICE],
+    ['stair_l',170,14,6,T.ICE],
+    ['stair_r',172,14,6,T.ICE],
+    ['flagpole',183,4,13],
+  ],
+  enemies:[
+    {type:'fgoomba',tx:12,ty:9},{type:'koopa',tx:18,ty:13},
+    {type:'fgoomba',tx:25,ty:8},{type:'koopa',tx:32,ty:13},
+    {type:'fgoomba',tx:38,ty:8},{type:'koopa',tx:46,ty:13},
+    {type:'fgoomba',tx:55,ty:7},{type:'koopa',tx:65,ty:13},
+    {type:'fgoomba',tx:72,ty:8},{type:'koopa',tx:78,ty:13},
+    {type:'fgoomba',tx:85,ty:7},{type:'koopa',tx:92,ty:13},
+    {type:'bullet', tx:105,ty:10,dir:-1},{type:'koopa',tx:112,ty:13},
+    {type:'fgoomba',tx:118,ty:7},{type:'koopa',tx:125,ty:13},
+    {type:'bullet', tx:148,ty:9,dir:-1},{type:'koopa',tx:155,ty:13},
+    {type:'fgoomba',tx:162,ty:8},{type:'koopa',tx:168,ty:13},
+  ],
+},
+
+// ——— WORLD 4: DARK WORLD / FINAL ———
+
+{ // 4-1: Dark forest
+  id:'4-1', world:4, level:1, theme:'dark', timeLimit:340,
+  width:215, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,214,T.DARK],
+    ['row',13, 0,  8,T.DARK],
+    ['tile',14, 8,T.QUESTION,'mushroom'],
+    ['tile',18, 8,T.QUESTION,'coin'],
+    ['pipe', 28,13,3],['pipe', 42,13,3],['pipe', 60,13,4],
+    ['row',14, 32, 40,T.SPIKE],
+    ['row',14, 80, 90,T.SPIKE],
+    ['row',14,130,142,T.SPIKE],
+    ['row',14,168,180,T.SPIKE],
+    ['row', 8, 50, 65,T.DARK],
+    ['row',10, 72, 86,T.DARK],
+    ['row', 8, 95,108,T.BRICK],
+    ['row',10,114,128,T.DARK],
+    ['row', 8,138,150,T.BRICK],
+    ['row',10,158,168,T.DARK],
+    ['tile',55, 8,T.QUESTION,'flower'],
+    ['tile',78,10,T.QUESTION,'coin'],
+    ['tile',100, 8,T.QUESTION,'star'],
+    ['tile',142, 8,T.QUESTION,'flower'],
+    ['pipe',188,13,3],
+    ['stair_r',196,14,8,T.DARK],
+    ['stair_l',207,14,5,T.DARK],
+    ['stair_r',208,14,5,T.DARK],
+    ['flagpole',212,4,13],
+  ],
+  enemies:[
+    {type:'koopa',tx:20,ty:13},{type:'goomba',tx:24,ty:13},
+    {type:'piranha',tx:28,ty:11},{type:'piranha',tx:42,ty:11},
+    {type:'koopa',tx:48,ty:13},{type:'fgoomba',tx:55,ty:6},
+    {type:'fgoomba',tx:65,ty:6},{type:'koopa',tx:70,ty:13},
+    {type:'fgoomba',tx:78,ty:8},{type:'koopa',tx:88,ty:13},
+    {type:'goomba',tx:95,ty:13},{type:'fgoomba',tx:100,ty:6},
+    {type:'koopa',tx:110,ty:13},{type:'koopa',tx:116,ty:13},
+    {type:'piranha',tx:128,ty:10},{type:'fgoomba',tx:135,ty:7},
+    {type:'koopa',tx:145,ty:13},{type:'fgoomba',tx:152,ty:6},
+    {type:'koopa',tx:160,ty:13},{type:'fgoomba',tx:165,ty:8},
+    {type:'piranha',tx:188,ty:11},{type:'koopa',tx:192,ty:13},
+  ],
+},
+
+{ // 4-2: Volcano — lava everywhere
+  id:'4-2', world:4, level:2, theme:'dark', timeLimit:320,
+  width:205, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,204,T.DARK],
+    ['row',13, 0,  6,T.DARK],
+    ['row',14, 18, 28,T.LAVA],['row',13,18,28,T.LAVA],
+    ['row',14, 44, 58,T.LAVA],['row',13,44,58,T.LAVA],
+    ['row',14, 78, 92,T.LAVA],['row',13,78,92,T.LAVA],
+    ['row',14,112,128,T.LAVA],['row',13,112,128,T.LAVA],
+    ['row',14,148,165,T.LAVA],['row',13,148,165,T.LAVA],
+    ['row',14,185,195,T.LAVA],['row',13,185,195,T.LAVA],
+    ['row',11, 20, 26,T.DARK],
+    ['row', 9, 46, 56,T.DARK],['row', 8, 48, 54,T.DARK],
+    ['row', 9, 80, 90,T.DARK],['row', 8, 82, 88,T.DARK],
+    ['row', 8,114,126,T.DARK],['row', 7,116,124,T.DARK],
+    ['row', 9,150,163,T.DARK],['row', 8,152,161,T.DARK],
+    ['row',11,187,193,T.DARK],
+    ['row', 8, 10, 16,T.BRICK],['tile',13, 8,T.QUESTION,'mushroom'],
+    ['row', 7, 32, 42,T.BRICK],['tile',37, 7,T.QUESTION,'flower'],
+    ['row', 7, 62, 76,T.BRICK],['tile',69, 7,T.QUESTION,'star'],
+    ['row', 7,100,110,T.BRICK],['tile',105, 7,T.QUESTION,'flower'],
+    ['row', 7,132,146,T.BRICK],['tile',139, 7,T.QUESTION,'star'],
+    ['stair_r',196,14,8,T.DARK],
+    ['flagpole',202,4,13],
+  ],
+  enemies:[
+    {type:'koopa',tx:14,ty:13},{type:'koopa',tx:16,ty:13},
+    {type:'fgoomba',tx:22,ty:8},{type:'koopa',tx:30,ty:13},
+    {type:'koopa',tx:34,ty:13},{type:'fgoomba',tx:50,ty:7},
+    {type:'koopa',tx:60,ty:13},{type:'koopa',tx:64,ty:13},
+    {type:'fgoomba',tx:82,ty:8},{type:'koopa',tx:94,ty:13},
+    {type:'koopa',tx:96,ty:13},{type:'fgoomba',tx:116,ty:6},
+    {type:'koopa',tx:130,ty:13},{type:'koopa',tx:134,ty:13},
+    {type:'fgoomba',tx:152,ty:8},{type:'koopa',tx:167,ty:13},
+    {type:'koopa',tx:170,ty:13},{type:'bullet',tx:183,ty:10,dir:-1},
+    {type:'koopa',tx:195,ty:13},{type:'koopa',tx:198,ty:13},
+  ],
+},
+
+{ // 4-3: Sky approach — thin platforms, bullet bills
+  id:'4-3', world:4, level:3, theme:'dark', timeLimit:310,
+  width:210, height:15,
+  startTX:3, startTY:12,
+  blueprint:[
+    ['row',14, 0,  6,T.DARK],['row',13,0,6,T.DARK],['row',12,0,6,T.DARK],
+    ['row',14,200,209,T.DARK],['row',13,200,209,T.DARK],
+    // Floating platforms in dark sky
+    ['row',12, 10, 18,T.DARK],['row',13,10,18,T.DARK],
+    ['row',10, 22, 30,T.DARK],['row',11,22,30,T.DARK],
+    ['row', 8, 34, 44,T.DARK],['row', 9,34,44,T.DARK],
+    ['row',11, 48, 58,T.DARK],['row',12,48,58,T.DARK],
+    ['row', 9, 62, 72,T.DARK],['row',10,62,72,T.DARK],
+    ['row',12, 76, 86,T.DARK],['row',13,76,86,T.DARK],
+    ['row', 8, 90,100,T.DARK],['row', 9,90,100,T.DARK],
+    ['row',11,104,114,T.DARK],['row',12,104,114,T.DARK],
+    ['row', 9,118,128,T.DARK],['row',10,118,128,T.DARK],
+    ['row',12,132,142,T.DARK],['row',13,132,142,T.DARK],
+    ['row', 9,146,158,T.DARK],['row',10,146,158,T.DARK],
+    ['row',11,162,172,T.DARK],['row',12,162,172,T.DARK],
+    ['row', 8,176,188,T.DARK],['row', 9,176,188,T.DARK],
+    ['row',12,192,209,T.DARK],['row',13,192,209,T.DARK],
+    ['tile',13,11,T.QUESTION,'mushroom'],
+    ['tile',36, 7,T.QUESTION,'flower'],
+    ['tile',65, 8,T.QUESTION,'star'],
+    ['tile',94, 7,T.QUESTION,'flower'],
+    ['tile',122, 8,T.QUESTION,'star'],
+    ['tile',150, 8,T.QUESTION,'flower'],
+    ['tile',180, 7,T.QUESTION,'star'],
+    ['stair_r',200,14,8,T.DARK],
+    ['flagpole',207,4,13],
+  ],
+  enemies:[
+    {type:'fgoomba',tx:14,ty:10},{type:'bullet',tx:30,ty:8,dir:-1},
+    {type:'fgoomba',tx:36,ty:6},{type:'fgoomba',tx:50,ty:9},
+    {type:'bullet', tx:64,ty:7,dir:-1},{type:'fgoomba',tx:66,ty:7},
+    {type:'fgoomba',tx:78,ty:10},{type:'fgoomba',tx:92,ty:6},
+    {type:'bullet', tx:100,ty:8,dir:-1},{type:'fgoomba',tx:106,ty:9},
+    {type:'fgoomba',tx:120,ty:7},{type:'bullet',tx:130,ty:9,dir:-1},
+    {type:'fgoomba',tx:135,ty:10},{type:'fgoomba',tx:148,ty:7},
+    {type:'bullet', tx:160,ty:8,dir:-1},{type:'fgoomba',tx:164,ty:9},
+    {type:'fgoomba',tx:178,tx:6},{type:'bullet',tx:185,ty:7,dir:-1},
+    {type:'fgoomba',tx:194,ty:10},
+  ],
+},
+
+{ // 4-4: Final castle
+  id:'4-4', world:4, level:4, theme:'castle', timeLimit:300,
+  width:200, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,199,T.CASTLE],
+    ['fill',0, 0,199,1,T.CASTLE],
+    ['row',14, 15, 25,T.LAVA],['row',13,15,25,T.LAVA],
+    ['row',14, 40, 54,T.LAVA],['row',13,40,54,T.LAVA],
+    ['row',14, 70, 86,T.LAVA],['row',13,70,86,T.LAVA],
+    ['row',14,105,120,T.LAVA],['row',13,105,120,T.LAVA],
+    ['row',14,138,155,T.LAVA],['row',13,138,155,T.LAVA],
+    ['row',14,172,185,T.LAVA],['row',13,172,185,T.LAVA],
+    ['row',11, 17, 23,T.CASTLE],
+    ['row', 9, 42, 52,T.CASTLE],['row', 8, 44, 50,T.CASTLE],
+    ['row', 9, 72, 84,T.CASTLE],['row', 8, 74, 82,T.CASTLE],
+    ['row', 8,107,118,T.CASTLE],['row', 7,109,116,T.CASTLE],
+    ['row', 9,140,153,T.CASTLE],['row', 8,142,151,T.CASTLE],
+    ['row',10,174,183,T.CASTLE],
+    ['row', 8, 8, 13,T.BRICK],['tile',10, 8,T.QUESTION,'flower'],
+    ['row', 7, 28, 38,T.BRICK],['tile',33, 7,T.QUESTION,'star'],
+    ['row', 7, 58, 68,T.BRICK],['tile',63, 7,T.QUESTION,'flower'],
+    ['row', 7, 90,103,T.BRICK],['tile',96, 7,T.QUESTION,'star'],
+    ['row', 7,126,136,T.BRICK],['tile',131, 7,T.QUESTION,'flower'],
+    ['row', 7,158,170,T.BRICK],['tile',164, 7,T.QUESTION,'star'],
+    ['stair_r',187,14,8,T.CASTLE],
+    ['stair_l',198,14,8,T.CASTLE],
+    ['stair_r',199,14,8,T.CASTLE],
+    ['flagpole',195,2,13],
+  ],
+  enemies:[
+    {type:'koopa',tx:10,ty:13},{type:'koopa',tx:12,ty:13},
+    {type:'fgoomba',tx:20,ty:8},{type:'koopa',tx:28,ty:13},
+    {type:'koopa',tx:32,ty:13},{type:'fgoomba',tx:45,ty:7},
+    {type:'koopa',tx:56,ty:13},{type:'koopa',tx:60,ty:13},
+    {type:'fgoomba',tx:75,ty:7},{type:'koopa',tx:88,ty:13},
+    {type:'koopa',tx:92,ty:13},{type:'bullet',tx:103,ty:9,dir:-1},
+    {type:'fgoomba',tx:110,ty:6},{type:'koopa',tx:122,ty:13},
+    {type:'koopa',tx:126,ty:13},{type:'fgoomba',tx:142,ty:8},
+    {type:'bullet',tx:153,ty:9,dir:-1},{type:'koopa',tx:158,ty:13},
+    {type:'koopa',tx:162,ty:13},{type:'fgoomba',tx:175,ty:8},
+    {type:'koopa',tx:183,ty:13},{type:'koopa',tx:186,ty:13},
+  ],
+},
+
+{ // 4-5: FINAL BOSS — ultimate challenge
+  id:'4-5', world:4, level:5, theme:'castle', timeLimit:300,
+  width:220, height:15,
+  startTX:3, startTY:11,
+  blueprint:[
+    ['row',14, 0,219,T.CASTLE],
+    ['fill',0, 0,219,1,T.CASTLE],
+    // Treacherous approach
+    ['row',14, 10, 20,T.LAVA],['row',13,10,20,T.LAVA],
+    ['row',14, 30, 44,T.LAVA],['row',13,30,44,T.LAVA],
+    ['row',14, 56, 70,T.LAVA],['row',13,56,70,T.LAVA],
+    ['row',14, 82, 96,T.LAVA],['row',13,82,96,T.LAVA],
+    // Final boss arena
+    ['row',14,108,218,T.LAVA],['row',13,108,218,T.LAVA],
+    ['row',11, 12, 18,T.CASTLE],
+    ['row', 9, 32, 42,T.CASTLE],['row', 8, 34, 40,T.CASTLE],
+    ['row', 9, 58, 68,T.CASTLE],['row', 8, 60, 66,T.CASTLE],
+    ['row', 9, 84, 94,T.CASTLE],['row', 8, 86, 92,T.CASTLE],
+    // Boss arena platforms
+    ['row',11,110,130,T.CASTLE],
+    ['row',11,135,155,T.CASTLE],
+    ['row',11,160,180,T.CASTLE],
+    ['row',11,185,205,T.CASTLE],
+    ['row',11,210,219,T.CASTLE],
+    ['row', 7,110,219,T.CASTLE],['fill',110,8,219,10,T.CASTLE],
+    // Boss platform bridges
+    ['row',13,110,130,T.CASTLE],
+    ['row',13,135,155,T.CASTLE],
+    ['row',13,160,180,T.CASTLE],
+    ['row',13,185,205,T.CASTLE],
+    // Items in approach
+    ['row', 8, 5, 8,T.BRICK],['tile', 6, 8,T.QUESTION,'mushroom'],
+    ['row', 7, 22, 28,T.BRICK],['tile',25, 7,T.QUESTION,'flower'],
+    ['row', 7, 46, 54,T.BRICK],['tile',50, 7,T.QUESTION,'star'],
+    ['row', 7, 72, 80,T.BRICK],['tile',76, 7,T.QUESTION,'flower'],
+    ['row', 7, 98,106,T.BRICK],['tile',102, 7,T.QUESTION,'star'],
+    // Final flagpole in boss area (past bosses)
+    ['stair_r',210,13,5,T.CASTLE],
+    ['flagpole',216,2,13],
+  ],
+  enemies:[
+    // Gauntlet approach
+    {type:'koopa',tx:8,ty:13},{type:'koopa',tx:10,ty:13},
+    {type:'fgoomba',tx:15,ty:8},{type:'koopa',tx:22,ty:13},
+    {type:'koopa',tx:24,ty:13},{type:'fgoomba',tx:36,ty:7},
+    {type:'bullet',tx:42,ty:9,dir:-1},{type:'koopa',tx:48,ty:13},
+    {type:'koopa',tx:52,ty:13},{type:'fgoomba',tx:62,ty:8},
+    {type:'bullet',tx:68,ty:9,dir:-1},{type:'koopa',tx:72,ty:13},
+    {type:'fgoomba',tx:78,ty:7},{type:'koopa',tx:86,ty:13},
+    {type:'koopa',tx:88,ty:13},{type:'bullet',tx:94,ty:9,dir:-1},
+    // Boss arena: heavy reinforcement
+    {type:'koopa',tx:112,ty:12},{type:'koopa',tx:118,ty:12},
+    {type:'koopa',tx:124,ty:12},{type:'fgoomba',tx:130,ty:8},
+    {type:'koopa',tx:137,ty:12},{type:'koopa',tx:143,ty:12},
+    {type:'koopa',tx:149,ty:12},{type:'fgoomba',tx:155,ty:8},
+    {type:'koopa',tx:162,ty:12},{type:'koopa',tx:168,ty:12},
+    {type:'bullet',tx:175,ty:10,dir:-1},{type:'koopa',tx:178,ty:12},
+    {type:'fgoomba',tx:185,ty:8},{type:'koopa',tx:187,ty:12},
+    {type:'koopa',tx:193,ty:12},{type:'koopa',tx:199,ty:12},
+    {type:'bullet',tx:205,ty:10,dir:-1},{type:'koopa',tx:208,ty:12},
+  ],
+},
+
+]; // end LEVEL_DEFS
+
+
+// ===== src/game.js =====
+// ============================================================
+// MAIN GAME — state machine, HUD, level loader, game loop
+// ============================================================
+
+const STATES = { TITLE:0, WORLD_INTRO:1, PLAYING:2, PAUSED:3, DYING:4, LEVEL_COMPLETE:5, GAME_OVER:6, VICTORY:7 };
+
+class Game {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx    = canvas.getContext('2d');
+    this.sfx    = new AudioEngine();
+    this.input  = new InputManager();
+    this.camera = new Camera();
+    this.particles = new ParticleSystem();
+
+    this.state  = STATES.TITLE;
+    this.frame  = 0;
+    this.levelIdx = 0;
+
+    this.player = new Player(0, 0);
+    this.map    = null;
+    this.entities = null;
+
+    this.timer    = 400;
+    this.timerTick = 0;
+    this.transTimer = 0;
+    this.coinAnimFrame = 0;
+    this.highScore = parseInt(localStorage.getItem('marioHS')||'0');
+
+    this._resize();
+    window.addEventListener('resize', () => this._resize());
+    requestAnimationFrame(() => this._loop());
+  }
+
+  _resize() {
+    const W = window.innerWidth, H = window.innerHeight;
+    const scale = Math.min(W/800, H/480);
+    this.canvas.width  = Math.floor(800);
+    this.canvas.height = Math.floor(480);
+    this.canvas.style.width  = Math.floor(800*scale)+'px';
+    this.canvas.style.height = Math.floor(480*scale)+'px';
+  }
+
+  _loop() {
+    this.frame++;
+    this.coinAnimFrame++;
+    this.input.update();
+    this._update();
+    this._render();
+    requestAnimationFrame(() => this._loop());
+  }
+
+  // ——— LOADING ———
+  loadLevel(idx) {
+    if (idx >= LEVEL_DEFS.length) { this.state = STATES.VICTORY; return; }
+    this.levelIdx = idx;
+    const def = LEVEL_DEFS[idx];
+    this.map = buildLevel(def);
+
+    const startPX = def.startTX * TS;
+    const startPY = (def.startTY - (this.player.big ? 1:0)) * TS - (this.player.big ? PH_B : PH_S);
+    this.player.x = startPX;
+    this.player.y = startPY;
+    this.player.vx = this.player.vy = 0;
+    this.player.dead = false;
+    this.player.deadTimer = 0;
+    this.player.flagSlide = false;
+    this.player.fireballs = [];
+    this.player.onGround = false;
+
+    this.entities = new EntityManager(this.particles, this.sfx, this.player);
+
+    // Spawn enemies from def
+    (def.enemies||[]).forEach(e => {
+      // Convert tile coords to pixel coords
+      const px = (e.tx||e.x) * TS;
+      const py = ((e.ty||e.y) * TS) - 36; // offset up from tile
+      this.entities.spawnEnemy(e.type, px, py, e.dir||1);
+    });
+
+    this.timer = def.timeLimit || 400;
+    this.timerTick = 0;
+
+    this.camera.x = 0; this.camera.y = 0;
+
+    // World intro screen before playing
+    this.transTimer = 120;
+    this.state = STATES.WORLD_INTRO;
+  }
+
+  // ——— UPDATE ———
+  _update() {
+    const inp = this.input;
+
+    switch(this.state) {
+      case STATES.TITLE: {
+        if (inp.justDown('jump') || inp.justDown('run') || inp.justDown('right')) {
+          this.sfx.play('coin');
+          this.player.lives = 3;
+          this.player.score = 0;
+          this.player.coins = 0;
+          this.player.state = 'small';
+          this.player.big = false;
+          this.loadLevel(0);
+        }
+        break;
+      }
+      case STATES.WORLD_INTRO: {
+        this.transTimer--;
+        if (this.transTimer <= 0 || inp.justDown('jump')) {
+          this.state = STATES.PLAYING;
+        }
+        break;
+      }
+      case STATES.PLAYING: {
+        const def = LEVEL_DEFS[this.levelIdx];
+        const lvlW = def.width * TS, lvlH = def.height * TS;
+
+        // Timer
+        this.timerTick++;
+        if (this.timerTick >= 40) { this.timerTick=0; this.timer--; }
+        if (this.timer <= 0) { this.player.die(this.camera); this.sfx.play('death'); }
+
+        // Pause
+        if (inp.justDown('KeyP') || inp.justDown('Escape')) {
+          this.state = STATES.PAUSED;
+          this.sfx.play('pause');
+          break;
+        }
+
+        // Player update
+        this.player.update(inp, this.map, this.entities, this.sfx, 1);
+
+        // Entities update
+        this.entities.update(this.map, this.player);
+
+        // Particles
+        this.particles.update();
+
+        // Check flag reach
+        if (!this.player.dead && !this.player.flagSlide) {
+          this._checkFlag();
+        }
+
+        // Death → fall off screen
+        if (this.player.dead) {
+          if (this.player.y > lvlH + 200) {
+            this.player.lives--;
+            if (this.player.lives <= 0) {
+              this.state = STATES.GAME_OVER;
+              this.transTimer = 180;
+            } else {
+              this.state = STATES.DYING;
+              this.transTimer = 90;
+            }
+          }
+        }
+
+        // Flag slide complete → level done
+        if (this.player.flagSlide && !this.player.flagSlide) {
+          // Already handled in flagSlide=false check
+        }
+        if (!this.player.flagSlide && this._levelDoneFlag) {
+          this._levelDoneFlag = false;
+          this._onLevelComplete();
+        }
+
+        // Camera
+        this.camera.update(
+          this.player.x, this.player.y,
+          lvlW, lvlH,
+          this.canvas.width, this.canvas.height
+        );
+
+        // Lethal tiles
+        if (!this.player.dead && this.map.isLethalAt(this.player.x+2, this.player.y+2, this.player.w-4, this.player.h-4)) {
+          this.player.die(this.camera);
+          this.sfx.play('death');
+        }
+
+        // Off bottom
+        if (this.player.y > lvlH + 100 && !this.player.dead) {
+          this.player.die(this.camera);
+          this.sfx.play('death');
+        }
+
+        // High score
+        if (this.player.score > this.highScore) {
+          this.highScore = this.player.score;
+          localStorage.setItem('marioHS', this.highScore);
+        }
+        break;
+      }
+      case STATES.PAUSED: {
+        if (inp.justDown('KeyP') || inp.justDown('Escape') || inp.justDown('jump')) {
+          this.state = STATES.PLAYING;
+          this.sfx.play('pause');
+        }
+        break;
+      }
+      case STATES.DYING: {
+        this.transTimer--;
+        if (this.transTimer <= 0) {
+          this.player.state = 'small'; this.player.big = false;
+          this.loadLevel(this.levelIdx);
+        }
+        break;
+      }
+      case STATES.LEVEL_COMPLETE: {
+        this.transTimer--;
+        if (this.transTimer <= 0) {
+          this.loadLevel(this.levelIdx + 1);
+        }
+        break;
+      }
+      case STATES.GAME_OVER: {
+        this.transTimer--;
+        if (this.transTimer <= 0) {
+          if (inp.justDown('jump') || inp.justDown('run') || this.transTimer < -120) {
+            this.player.lives = 3;
+            this.player.score = 0;
+            this.player.coins = 0;
+            this.player.state = 'small';
+            this.player.big = false;
+            this.loadLevel(0);
+          }
+        } else if (this.transTimer < 0) {
+          if (inp.justDown('jump') || inp.justDown('run')) {
+            this.player.lives = 3; this.player.score = 0; this.player.coins = 0;
+            this.player.state = 'small'; this.player.big = false;
+            this.loadLevel(0);
+          }
+        }
+        break;
+      }
+      case STATES.VICTORY: {
+        if (inp.justDown('jump') || inp.justDown('run')) {
+          this.player.lives = 3; this.player.score = 0; this.player.coins = 0;
+          this.player.state = 'small'; this.player.big = false;
+          this.state = STATES.TITLE;
+        }
+        break;
+      }
+    }
+  }
+
+  _checkFlag() {
+    const def = LEVEL_DEFS[this.levelIdx];
+    // Find flagpole in blueprint
+    let flagPX = -1, flagBottomTY = 13;
+    for (const cmd of (def.blueprint||[])) {
+      if (cmd[0]==='flagpole') { flagPX=cmd[1]*TS; flagBottomTY=cmd[3]; break; }
+    }
+    if (flagPX < 0) return;
+    const flagBottom = flagBottomTY * TS;
+    // Player's right edge passes flag pole x
+    if (this.player.x + this.player.w > flagPX + 12 && this.player.x < flagPX + 20) {
+      this.player.startFlagSlide(flagPX + 14, flagBottom, this.sfx);
+      this._levelDoneFlag = true;
+      // Bonus score from timer
+      this.player.score += this.timer * 50;
+      this.particles.addText(this.player.x, this.player.y - 30, `+${this.timer*50}`, '#FFD700');
+    }
+  }
+
+  _onLevelComplete() {
+    this.sfx.play('levelcomplete');
+    this.state = STATES.LEVEL_COMPLETE;
+    this.transTimer = 220;
+  }
+
+  // ——— RENDER ———
+  _render() {
+    const ctx = this.ctx;
+    const W = this.canvas.width, H = this.canvas.height;
+
+    switch(this.state) {
+      case STATES.TITLE:    this._drawTitle(ctx, W, H); break;
+      case STATES.WORLD_INTRO: this._drawWorldIntro(ctx, W, H); break;
+      case STATES.PLAYING:
+      case STATES.PAUSED:   this._drawGame(ctx, W, H); break;
+      case STATES.DYING:    this._drawGame(ctx, W, H); this._drawDying(ctx, W, H); break;
+      case STATES.LEVEL_COMPLETE: this._drawGame(ctx, W, H); this._drawLevelComplete(ctx, W, H); break;
+      case STATES.GAME_OVER: this._drawGameOver(ctx, W, H); break;
+      case STATES.VICTORY:  this._drawVictory(ctx, W, H); break;
+    }
+  }
+
+  _drawGame(ctx, W, H) {
+    const def = LEVEL_DEFS[this.levelIdx];
+    const camX = this.camera.rx, camY = this.camera.ry;
+    const lvlW = def.width * TS, lvlH = def.height * TS;
+    const f = this.frame;
+
+    // Background
+    drawBackground(ctx, camX, camY, lvlW, def.theme, f);
+
+    // Tiles
+    const tx1=Math.floor(camX/TS), tx2=Math.min(def.width-1, Math.ceil((camX+W)/TS));
+    const ty1=Math.floor(camY/TS), ty2=Math.min(def.height-1, Math.ceil((camY+H)/TS));
+    for (let ty=ty1;ty<=ty2;ty++) for (let tx=tx1;tx<=tx2;tx++) {
+      const tile=this.map.get(tx,ty);
+      if (tile!==T.EMPTY) drawTile(ctx,tile,tx*TS-camX,ty*TS-camY,f);
+    }
+
+    // Entities
+    this.entities.draw(ctx, camX, camY, f);
+
+    // Player
+    this.player.draw(ctx, camX, camY);
+
+    // Particles
+    this.particles.draw(ctx, camX, camY);
+
+    // HUD
+    this._drawHUD(ctx, W, H);
+
+    // Pause overlay
+    if (this.state === STATES.PAUSED) {
+      ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(0,0,W,H);
+      ctx.fillStyle='#FFF'; ctx.font='bold 40px monospace'; ctx.textAlign='center';
+      ctx.fillText('PAUSED', W/2, H/2);
+      ctx.font='18px monospace'; ctx.fillText('Press P or ESC to resume', W/2, H/2+40);
+    }
+  }
+
+  _drawHUD(ctx, W, H) {
+    const p = this.player;
+    ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(0,0,W,36);
+    ctx.fillStyle='#FFFFFF'; ctx.font='bold 16px monospace'; ctx.textAlign='left';
+
+    // Score
+    ctx.fillStyle='#FFD700'; ctx.fillText('SCORE', 12, 16);
+    ctx.fillStyle='#FFF';    ctx.fillText(String(p.score).padStart(7,'0'), 12, 32);
+
+    // Coins
+    ctx.fillStyle='#FFD700'; ctx.fillText('× COINS', 160, 16);
+    ctx.fillStyle='#FFF';    ctx.fillText(String(p.coins).padStart(2,'0'), 200, 32);
+    drawCoin(ctx, 144, 16, this.coinAnimFrame, false);
+
+    // World
+    ctx.fillStyle='#FFD700'; ctx.textAlign='center'; ctx.fillText('WORLD', W/2, 16);
+    const def = LEVEL_DEFS[this.levelIdx];
+    ctx.fillStyle='#FFF'; ctx.fillText(`${def.world}-${def.level}`, W/2, 32);
+
+    // Lives
+    ctx.fillStyle='#FFD700'; ctx.textAlign='left'; ctx.fillText('LIVES', W-130, 16);
+    ctx.fillStyle='#FFF';    ctx.fillText(`× ${p.lives}`, W-85, 32);
+    drawMario(ctx, W-120, 10, false, 0, 1, p.state, false, false);
+
+    // Timer
+    ctx.fillStyle='#FFD700'; ctx.textAlign='right'; ctx.fillText('TIME', W-10, 16);
+    ctx.fillStyle = this.timer < 100 ? '#FF4040' : '#FFF';
+    ctx.fillText(String(Math.max(0,this.timer)), W-10, 32);
+  }
+
+  _drawTitle(ctx, W, H) {
+    // Gradient background
+    const g=ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'#1a0060'); g.addColorStop(1,'#0030b0');
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+
+    // Stars
+    ctx.fillStyle='rgba(255,255,255,0.8)';
+    for (let i=0;i<60;i++) {
+      const sx=(i*97.3+11)%W, sy=(i*47.7+7)%(H*0.55);
+      ctx.fillRect(sx,sy,i%4===0?2:1,i%4===0?2:1);
+    }
+
+    // Title box
+    ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(80,80,640,120);
+    ctx.strokeStyle='#FFD700'; ctx.lineWidth=3; ctx.strokeRect(80,80,640,120);
+
+    // Title text with shadow
+    ctx.font='bold 54px monospace'; ctx.textAlign='center';
+    ctx.fillStyle='#FF4000'; ctx.fillText('SUPER PLUMBER', W/2+3, 148+3);
+    ctx.fillStyle='#FFD700'; ctx.fillText('SUPER PLUMBER', W/2, 148);
+    ctx.fillStyle='#FF8800'; ctx.fillText('ADVENTURE', W/2+2, 192+2);
+    ctx.fillStyle='#FFFFFF'; ctx.fillText('ADVENTURE', W/2, 192);
+
+    // Decorative Marios
+    drawMario(ctx, 80, 130, true, Math.floor(this.frame/8)%4, 1, 'fire', false, false);
+    drawMario(ctx, 670, 130, true, Math.floor(this.frame/8)%4, -1, 'big', false, false);
+
+    // Blinking press start
+    if (Math.floor(this.frame/30)%2===0) {
+      ctx.fillStyle='#FFFFFF'; ctx.font='bold 22px monospace';
+      ctx.fillText('PRESS JUMP / SPACE TO START', W/2, 260);
+    }
+
+    // Controls
+    ctx.fillStyle='rgba(255,255,255,0.7)'; ctx.font='14px monospace';
+    ctx.fillText('ARROW KEYS / WASD = Move   SPACE/X/W = Jump   SHIFT/Z = Run   Z (fire state) = Throw', W/2, 300);
+
+    // Level count & high score
+    ctx.fillStyle='#FFD700'; ctx.font='16px monospace';
+    ctx.fillText('20 LEVELS · 4 WORLDS', W/2, 340);
+    ctx.fillStyle='#FFF'; ctx.font='14px monospace';
+    ctx.fillText(`HIGH SCORE: ${String(this.highScore).padStart(7,'0')}`, W/2, 365);
+
+    // Enemies preview
+    drawGoomba(ctx, 160, 380, this.frame, false);
+    drawKoopa(ctx, 220, 376, this.frame, false, -1, false);
+    drawFlyingGoomba(ctx, 290, 375, this.frame);
+    drawMushroom(ctx, 360, 378, 'red');
+    drawStar(ctx, 420, 378, this.frame);
+    drawFireFlower(ctx, 480, 374, this.frame);
+    drawMushroom(ctx, 540, 378, '1up');
+  }
+
+  _drawWorldIntro(ctx, W, H) {
+    const def = LEVEL_DEFS[this.levelIdx];
+    ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#FFF'; ctx.font='bold 28px monospace'; ctx.textAlign='center';
+    ctx.fillText(`WORLD  ${def.world} - ${def.level}`, W/2, H/2-20);
+    // Draw lives
+    for (let i=0;i<Math.min(this.player.lives,5);i++) {
+      drawMario(ctx, W/2-70+i*30, H/2+10, false, 0, 1, this.player.state, false, false);
+    }
+    ctx.fillStyle='#FFF'; ctx.font='18px monospace';
+    ctx.fillText(`× ${this.player.lives}`, W/2+20, H/2+36);
+  }
+
+  _drawLevelComplete(ctx, W, H) {
+    const alpha = Math.min(1, (220-this.transTimer)/30);
+    ctx.fillStyle=`rgba(0,0,0,${alpha*0.5})`; ctx.fillRect(0,0,W,H);
+    if (alpha<0.5) return;
+    ctx.fillStyle='#FFD700'; ctx.font='bold 40px monospace'; ctx.textAlign='center';
+    ctx.fillText('LEVEL CLEAR!', W/2, H/2-20);
+    ctx.fillStyle='#FFF'; ctx.font='20px monospace';
+    ctx.fillText(`Score: ${String(this.player.score).padStart(7,'0')}`, W/2, H/2+20);
+  }
+
+  _drawDying(ctx, W, H) {
+    if (this.transTimer < 50) {
+      ctx.fillStyle=`rgba(0,0,0,${(50-this.transTimer)/50})`; ctx.fillRect(0,0,W,H);
+    }
+  }
+
+  _drawGameOver(ctx, W, H) {
+    ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+    const t = Math.min(1, (180-this.transTimer)/40);
+    ctx.globalAlpha = t;
+    ctx.fillStyle='#D80000'; ctx.font='bold 64px monospace'; ctx.textAlign='center';
+    ctx.fillText('GAME', W/2, H/2-30);
+    ctx.fillText('OVER', W/2, H/2+40);
+    ctx.globalAlpha=1;
+    if (this.transTimer < 0 && Math.floor(this.frame/30)%2===0) {
+      ctx.fillStyle='#FFF'; ctx.font='18px monospace';
+      ctx.fillText('Press JUMP to try again', W/2, H/2+100);
+    }
+    ctx.fillStyle='#FFD700'; ctx.font='16px monospace';
+    ctx.fillText(`Final Score: ${String(this.player.score).padStart(7,'0')}`, W/2, H/2+130);
+  }
+
+  _drawVictory(ctx, W, H) {
+    const g=ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'#000060'); g.addColorStop(1,'#0000C0');
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+
+    // Fireworks via particles (just draw static stars)
+    ctx.fillStyle='#FFD700';
+    for (let i=0;i<30;i++) {
+      const sx=(i*137+this.frame*2)%W, sy=(i*73+this.frame)%H;
+      ctx.fillRect(sx,sy,3,3);
+    }
+
+    ctx.fillStyle='#FFD700'; ctx.font='bold 48px monospace'; ctx.textAlign='center';
+    ctx.fillText('YOU WIN!', W/2, 120);
+    ctx.fillStyle='#FFFFFF'; ctx.font='bold 24px monospace';
+    ctx.fillText('CONGRATULATIONS!', W/2, 170);
+    ctx.fillStyle='#FFF'; ctx.font='20px monospace';
+    ctx.fillText(`Final Score: ${String(this.player.score).padStart(7,'0')}`, W/2, 220);
+    ctx.fillText(`High Score:  ${String(this.highScore).padStart(7,'0')}`, W/2, 250);
+
+    drawMario(ctx, W/2-12, 290, true, Math.floor(this.frame/6)%4, 1, 'fire', false, false);
+
+    if (Math.floor(this.frame/30)%2===0) {
+      ctx.fillStyle='#FFD700'; ctx.font='18px monospace';
+      ctx.fillText('Press JUMP to play again', W/2, 380);
+    }
+  }
+}
+
+// ============================================================
+// BOOT
+// ============================================================
+(function() {
+  const canvas = document.getElementById('gameCanvas');
+  window._game = new Game(canvas);
+})();
+
+  </script>
+</body>
+</html>
