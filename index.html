@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Super Plumber Adventure — 20 Levels</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Super Plumber Adventure</title>
   <style>
 * {
   margin: 0;
@@ -93,13 +93,13 @@ html, body {
         <button class="touch-btn" id="btn-right">▶</button>
       </div>
       <div id="touch-right">
+        <button class="touch-btn" id="btn-jump">▲</button>
         <button class="touch-btn" id="btn-run">B</button>
-        <button class="touch-btn" id="btn-jump">A</button>
       </div>
     </div>
   </div>
   <script>
-// ===== src/constants.js =====
+// === constants.js ===
 // ============================================================
 // CONSTANTS
 // ============================================================
@@ -140,8 +140,7 @@ const JUMP_BUFFER  = 10;
 const PW_S = 22, PH_S = 26;
 const PW_B = 24, PH_B = 46;
 
-
-// ===== src/audio_input.js =====
+// === audio_input.js ===
 // ============================================================
 // AUDIO ENGINE
 // ============================================================
@@ -241,8 +240,7 @@ class InputManager {
   }
 }
 
-
-// ===== src/sprites.js =====
+// === sprites.js ===
 // ============================================================
 // SPRITE DRAWING — all character/item art via Canvas primitives
 // ============================================================
@@ -408,8 +406,7 @@ function drawFireball(ctx, x, y, f) {
   ctx.fillStyle='#FFF'; ctx.beginPath(); ctx.arc(x+4,y+4,2.5,0,Math.PI*2); ctx.fill();
 }
 
-
-// ===== src/tiles_camera.js =====
+// === tiles_camera.js ===
 // ============================================================
 // TILE & BACKGROUND RENDERING
 // ============================================================
@@ -656,8 +653,7 @@ class ParticleSystem {
   }
 }
 
-
-// ===== src/tilemap.js =====
+// === tilemap.js ===
 // ============================================================
 // TILEMAP — stores tiles, builds from blueprint, handles collision
 // ============================================================
@@ -774,8 +770,7 @@ function buildLevel(def) {
   return map;
 }
 
-
-// ===== src/player.js =====
+// === player.js ===
 // ============================================================
 // PLAYER
 // ============================================================
@@ -1129,8 +1124,7 @@ class Fireball {
   }
 }
 
-
-// ===== src/entities.js =====
+// === entities.js ===
 // ============================================================
 // ENTITY MANAGER — enemies, items, spawning
 // ============================================================
@@ -1399,8 +1393,7 @@ class PowerUp {
   }
 }
 
-
-// ===== src/levels.js =====
+// === levels.js ===
 // ============================================================
 // LEVEL DEFINITIONS — 20 levels across 4 worlds
 // Each level: { width, height, theme, timeLimit, startX, startY,
@@ -2242,8 +2235,7 @@ const LEVEL_DEFS = [
 
 ]; // end LEVEL_DEFS
 
-
-// ===== src/game.js =====
+// === game.js ===
 // ============================================================
 // MAIN GAME — state machine, HUD, level loader, game loop
 // ============================================================
@@ -2291,8 +2283,8 @@ class Game {
     this.frame++;
     this.coinAnimFrame++;
     this.input.update();
-    this._update();
-    this._render();
+    try { this._update(); } catch(e) { console.error('Update error:', e); }
+    try { this._render(); } catch(e) { console.error('Render error:', e); }
     requestAnimationFrame(() => this._loop());
   }
 
