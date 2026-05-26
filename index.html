@@ -2383,8 +2383,8 @@ class Game {
         // Particles
         this.particles.update();
 
-        // Check flag reach
-        if (!this.player.dead && !this.player.flagSlide) {
+        // Check flag reach (guard with _levelDoneFlag so we don't restart the slide after it finishes)
+        if (!this.player.dead && !this.player.flagSlide && !this._levelDoneFlag) {
           this._checkFlag();
         }
 
