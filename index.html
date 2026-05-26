@@ -675,7 +675,8 @@ class TileMap {
     if (metaVal !== undefined) this.meta[y*this.width+x] = metaVal;
   }
   get(x,y) {
-    if (x<0||x>=this.width||y<0||y>=this.height) return T.SOLID;
+    if (y < 0) return T.SOLID;                   // ceiling: block upward escape
+    if (x<0||x>=this.width||y>=this.height) return T.EMPTY; // sides/bottom: open void
     return this.data[y*this.width+x];
   }
   getMeta(x,y) { return this.meta[y*this.width+x]; }
