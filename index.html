@@ -140,6 +140,7 @@ const JUMP_BUFFER  = 10;
 const PW_S = 22, PH_S = 26;
 const PW_B = 24, PH_B = 46;
 
+
 // === audio_input.js ===
 // ============================================================
 // AUDIO ENGINE
@@ -239,6 +240,7 @@ class InputManager {
     };
   }
 }
+
 
 // === sprites.js ===
 // ============================================================
@@ -405,6 +407,7 @@ function drawFireball(ctx, x, y, f) {
   ctx.beginPath(); ctx.arc(x+6,y+6,6,0,Math.PI*2); ctx.fill();
   ctx.fillStyle='#FFF'; ctx.beginPath(); ctx.arc(x+4,y+4,2.5,0,Math.PI*2); ctx.fill();
 }
+
 
 // === tiles_camera.js ===
 // ============================================================
@@ -653,6 +656,7 @@ class ParticleSystem {
   }
 }
 
+
 // === tilemap.js ===
 // ============================================================
 // TILEMAP — stores tiles, builds from blueprint, handles collision
@@ -769,6 +773,7 @@ function buildLevel(def) {
   }
   return map;
 }
+
 
 // === player.js ===
 // ============================================================
@@ -1124,6 +1129,7 @@ class Fireball {
   }
 }
 
+
 // === entities.js ===
 // ============================================================
 // ENTITY MANAGER — enemies, items, spawning
@@ -1392,6 +1398,7 @@ class PowerUp {
     else if(this.type==='star') drawStar(ctx,sx,sy,f);
   }
 }
+
 
 // === levels.js ===
 // ============================================================
@@ -2235,6 +2242,7 @@ const LEVEL_DEFS = [
 
 ]; // end LEVEL_DEFS
 
+
 // === game.js ===
 // ============================================================
 // MAIN GAME — state machine, HUD, level loader, game loop
@@ -2282,9 +2290,9 @@ class Game {
   _loop() {
     this.frame++;
     this.coinAnimFrame++;
-    this.input.update();
     try { this._update(); } catch(e) { console.error('Update error:', e); }
     try { this._render(); } catch(e) { console.error('Render error:', e); }
+    this.input.update(); // must be AFTER _update so justDown() sees prev vs now correctly
     requestAnimationFrame(() => this._loop());
   }
 
@@ -2728,6 +2736,6 @@ class Game {
   window._game = new Game(canvas);
 })();
 
-  </script>
+</script>
 </body>
 </html>
