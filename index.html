@@ -1567,10 +1567,10 @@ const LEVEL_DEFS = [
     ['row',14, 30, 38,T.LAVA],['row',13,30,38,T.LAVA],
     ['row',14, 70, 82,T.LAVA],['row',13,70,82,T.LAVA],
     ['row',14,115,128,T.LAVA],['row',13,115,128,T.LAVA],
-    // platforms over lava
-    ['row',10, 32, 36,T.PLATFORM],
-    ['row', 9, 72, 76,T.PLATFORM],['row', 9, 78, 82,T.PLATFORM],
-    ['row', 9,117,121,T.PLATFORM],['row', 9,123,127,T.PLATFORM],
+    // platforms over lava — row 11 is easily reachable (96px above ground, well within jump arc)
+    ['row',11, 32, 36,T.PLATFORM],
+    ['row',11, 72, 76,T.PLATFORM],['row',11, 78, 82,T.PLATFORM],
+    ['row',11,117,121,T.PLATFORM],['row',11,123,127,T.PLATFORM],
     // bricks
     ['row', 8, 20, 30,T.BRICK],
     ['tile',25, 8,T.QUESTION,'flower'],
@@ -2425,8 +2425,8 @@ class Game {
           this.sfx.play('death');
         }
 
-        // Off bottom
-        if (this.player.y > lvlH + 100 && !this.player.dead) {
+        // Off bottom — fire as soon as Mario's feet cross the level base (no invisible zone)
+        if (this.player.y + this.player.h > lvlH && !this.player.dead) {
           this.player.die(this.camera);
           this.sfx.play('death');
         }
